@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'providers/audio_provider.dart';
+import 'providers/downloader_provider.dart';
 import 'screens/home_screen.dart';
 
 Future<void> main() async {
@@ -17,6 +18,7 @@ Future<void> main() async {
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AudioProvider()),
+        ChangeNotifierProvider(create: (_) => DownloaderProvider()),
       ],
       child: const MyApp(),
     ),

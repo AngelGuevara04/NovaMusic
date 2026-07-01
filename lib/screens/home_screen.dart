@@ -5,6 +5,7 @@ import '../providers/audio_provider.dart';
 import '../widgets/song_tile.dart';
 import 'player_screen.dart';
 import 'hidden_songs_screen.dart';
+import 'downloader_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -53,6 +54,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.cloud_download, color: Colors.white),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const DownloaderScreen()),
+              );
+            },
+          ),
           Consumer<AudioProvider>(
             builder: (context, provider, child) {
               return PopupMenuButton<String>(
