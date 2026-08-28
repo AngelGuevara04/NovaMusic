@@ -204,12 +204,29 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                                 ),
                                 title: Text(video.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
                                 subtitle: Text(video.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54)),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.download, color: Colors.deepPurpleAccent),
-                                  onPressed: () {
-                                    _startDownload(video.url);
-                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Descarga iniciada')));
-                                  },
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (downloader.previewingUrl == video.url && downloader.isDownloadingPreview)
+                                      const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                                    else
+                                      IconButton(
+                                        icon: Icon(
+                                          downloader.previewingUrl == video.url && downloader.isPreviewPlaying
+                                              ? Icons.pause_circle_filled
+                                              : Icons.play_circle_filled,
+                                          color: Colors.white,
+                                        ),
+                                        onPressed: () => downloader.togglePreview(video),
+                                      ),
+                                    IconButton(
+                                      icon: const Icon(Icons.download, color: Colors.deepPurpleAccent),
+                                      onPressed: () {
+                                        _startDownload(video.url);
+                                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Descarga iniciada')));
+                                      },
+                                    ),
+                                  ],
                                 ),
                               );
                             },

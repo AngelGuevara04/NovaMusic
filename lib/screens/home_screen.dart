@@ -116,16 +116,32 @@ class _HomeScreenState extends State<HomeScreen> {
       body: Consumer<AudioProvider>(
         builder: (context, audioProvider, child) {
           if (audioProvider.songs.isEmpty) {
-            return const Center(
+            return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.music_off, size: 80, color: Colors.white30),
-                  SizedBox(height: 16),
-                  Text(
-                    'No se encontraron canciones',
+                  const Icon(Icons.music_off, size: 80, color: Colors.white30),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '¿No encuentras lo que buscas?',
                     style: TextStyle(color: Colors.white54, fontSize: 18),
                   ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).primaryColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    ),
+                    icon: const Icon(Icons.download),
+                    label: const Text('Ir a Descargas'),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const DownloaderScreen()),
+                      );
+                    },
+                  )
                 ],
               ),
             );

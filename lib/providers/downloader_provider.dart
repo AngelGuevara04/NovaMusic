@@ -9,6 +9,8 @@ import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import 'package:media_scanner/media_scanner.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 
 class DownloadTask {
   String id = UniqueKey().toString();
@@ -30,8 +32,15 @@ class DownloaderProvider extends ChangeNotifier {
   List<Video> _searchResults = [];
   bool _isSearching = false;
 
+  final AudioPlayer _previewPlayer = AudioPlayer();
+  String? _previewingUrl;
+  bool _isDownloadingPreview = false;
+
   List<Video> get searchResults => _searchResults;
   bool get isSearching => _isSearching;
+  String? get previewingUrl => _previewingUrl;
+  bool get isDownloadingPreview => _isDownloadingPreview;
+  bool get isPreviewPlaying => _previewPlayer.playing;
 
   final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
   
@@ -385,9 +394,82 @@ class DownloaderProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> stopPreview() async {
+    await _previewPlayer.stop();
+    _previewingUrl = null;
+    _isDownloadingPreview = false;
+    notifyListeners();
+  }
+
+  Future<void> togglePreview(Video video) async {
+    if (_previewingUrl == video.url && _previewPlayer.playing) {
+      await _previewPlayer.pause();
+      notifyListeners();
+      return;
+    } else if (_previewingUrl == video.url && !_previewPlayer.playing && !_isDownloadingPreview) {
+      await _previewPlayer.play();
+      notifyListeners();
+      return;
+    }
+
+    await stopPreview();
+    _previewingUrl = video.url;
+    _isDownloadingPreview = true;
+    notifyListeners();
+
+    try {
+      final manifest = await _yt.videos.streamsClient.getManifest(video.url).timeout(const Duration(seconds: 15));
+      final streamInfo = manifest.muxed.withHighestBitrate();
+
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/preview_${video.id.value}.mp3');
+
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
+
+      String command = '-y -i "${streamInfo.url}" -t 30 -vn -b:a 96k "${tempFile.path}"';
+      var session = await FFmpegKit.execute(command);
+      var returnCode = await session.getReturnCode();
+
+      if (!ReturnCode.isSuccess(returnCode)) {
+        throw Exception('FFmpeg failed to create preview');
+      }
+
+      await _previewPlayer.setAudioSource(
+        AudioSource.file(
+          tempFile.path,
+          tag: MediaItem(
+            id: video.url,
+            title: video.title,
+            artist: video.author,
+          ),
+        ),
+      );
+      
+      _isDownloadingPreview = false;
+      notifyListeners();
+      
+      await _previewPlayer.play();
+
+      _previewPlayer.playerStateStream.listen((state) {
+        if (state.processingState == ProcessingState.completed) {
+          _previewingUrl = null;
+          notifyListeners();
+        }
+      });
+    } catch (e) {
+      debugPrint('Preview error: $e');
+      _previewingUrl = null;
+      _isDownloadingPreview = false;
+      notifyListeners();
+    }
+  }
+
   @override
   void dispose() {
     _yt.close();
+    _previewPlayer.dispose();
     super.dispose();
   }
 }
