@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class AudioProvider with ChangeNotifier {
   final OnAudioQuery _audioQuery = OnAudioQuery();
@@ -26,6 +28,9 @@ class AudioProvider with ChangeNotifier {
   
   ConcatenatingAudioSource? _playlist;
   bool _needsPlaylistRebuild = false;
+
+  Timer? _sleepTimer;
+  DateTime? _sleepTimerEndTime;
 
   AudioProvider() {
     _init();
@@ -55,11 +60,27 @@ class AudioProvider with ChangeNotifier {
   Duration get totalDuration => _totalDuration;
   AudioPlayer get player => _audioPlayer;
   String get currentSort => _currentSort;
+  DateTime? get sleepTimerEndTime => _sleepTimerEndTime;
 
   Future<void> _init() async {
     await _loadHiddenSongs();
+    
+    // Configurar salto automático de silencios (gapless/skip silence)
+    try {
+      await _audioPlayer.setSkipSilenceEnabled(true);
+    } catch (e) {
+      print("Skip silence not supported on this platform: $e");
+    }
+
     _listenToPlayerEvents();
     await checkAndRequestPermissions();
+    
+    // Auto-sync from Supabase if logged in
+    final prefs = await SharedPreferences.getInstance();
+    final username = prefs.getString('current_username');
+    if (username != null && username.isNotEmpty) {
+      loadPreferencesFromSupabase(username);
+    }
   }
 
   void _listenToPlayerEvents() {
@@ -92,10 +113,50 @@ class AudioProvider with ChangeNotifier {
     _hiddenSongIds = hiddenList.map((e) => int.parse(e)).toList();
   }
 
+  Future<void> loadPreferencesFromSupabase(String username) async {
+    try {
+      final supabase = Supabase.instance.client;
+      final response = await supabase
+          .from('user_preferences')
+          .select()
+          .eq('username', username)
+          .maybeSingle();
+
+      if (response != null && response['hidden_songs'] != null) {
+        List<dynamic> hidden = response['hidden_songs'];
+        _hiddenSongIds = hidden.map((e) => int.parse(e.toString())).toList();
+        
+        final prefs = await SharedPreferences.getInstance();
+        final hiddenList = _hiddenSongIds.map((e) => e.toString()).toList();
+        await prefs.setStringList('hidden_songs', hiddenList);
+        
+        _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
+        _applySort();
+        _needsPlaylistRebuild = true;
+        notifyListeners();
+      }
+    } catch (e) {
+      print('Error loading from Supabase: $e');
+    }
+  }
+
   Future<void> _saveHiddenSongs() async {
     final prefs = await SharedPreferences.getInstance();
     final hiddenList = _hiddenSongIds.map((e) => e.toString()).toList();
     await prefs.setStringList('hidden_songs', hiddenList);
+    
+    // Sync to Supabase
+    final username = prefs.getString('current_username');
+    if (username != null && username.isNotEmpty) {
+      try {
+        final supabase = Supabase.instance.client;
+        await supabase.from('user_preferences').update({
+          'hidden_songs': hiddenList,
+        }).eq('username', username);
+      } catch (e) {
+        print('Error syncing to Supabase: $e');
+      }
+    }
   }
 
   Future<void> checkAndRequestPermissions() async {
@@ -289,8 +350,28 @@ class AudioProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  // ---- Sleep Timer ----
+  void setSleepTimer(int minutes) {
+    _sleepTimer?.cancel();
+    _sleepTimerEndTime = DateTime.now().add(Duration(minutes: minutes));
+    _sleepTimer = Timer(Duration(minutes: minutes), () async {
+      await _audioPlayer.pause();
+      _sleepTimerEndTime = null;
+      notifyListeners();
+    });
+    notifyListeners();
+  }
+
+  void cancelSleepTimer() {
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    _sleepTimerEndTime = null;
+    notifyListeners();
+  }
+
   @override
   void dispose() {
+    _sleepTimer?.cancel();
     _audioPlayer.dispose();
     super.dispose();
   }

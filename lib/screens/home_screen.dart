@@ -6,6 +6,8 @@ import '../widgets/song_tile.dart';
 import 'player_screen.dart';
 import 'hidden_songs_screen.dart';
 import 'downloader_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'login_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -22,6 +24,51 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _showSleepTimerDialog(BuildContext context, AudioProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text('Temporizador de Apagado', style: TextStyle(color: Colors.white)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (provider.sleepTimerEndTime != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    'Temporizador activo',
+                    style: TextStyle(color: Colors.deepPurpleAccent),
+                  ),
+                ),
+              ...[15, 30, 45, 60].map((minutes) => ListTile(
+                title: Text('$minutes minutos', style: const TextStyle(color: Colors.white)),
+                leading: const Icon(Icons.bedtime_outlined, color: Colors.deepPurpleAccent),
+                onTap: () {
+                  provider.setSleepTimer(minutes);
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('La música se detendrá en $minutes minutos 🌙')),
+                  );
+                },
+              )),
+              if (provider.sleepTimerEndTime != null)
+                ListTile(
+                  title: const Text('Cancelar temporizador', style: TextStyle(color: Colors.redAccent)),
+                  leading: const Icon(Icons.cancel_outlined, color: Colors.redAccent),
+                  onTap: () {
+                    provider.cancelSleepTimer();
+                    Navigator.pop(ctx);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -65,14 +112,33 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           Consumer<AudioProvider>(
             builder: (context, provider, child) {
+              final hasTimer = provider.sleepTimerEndTime != null;
+              return IconButton(
+                icon: Icon(Icons.bedtime, color: hasTimer ? Colors.deepPurpleAccent : Colors.white),
+                tooltip: hasTimer ? 'Temporizador activo' : 'Temporizador de apagado',
+                onPressed: () => _showSleepTimerDialog(context, provider),
+              );
+            },
+          ),
+          Consumer<AudioProvider>(
+            builder: (context, provider, child) {
               return PopupMenuButton<String>(
                 icon: const Icon(Icons.sort, color: Colors.white),
-                onSelected: (String result) {
+                onSelected: (String result) async {
                   if (result == 'restore_hidden') {
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (context) => const HiddenSongsScreen()),
                     );
+                  } else if (result == 'logout') {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.remove('current_username');
+                    if (context.mounted) {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (context) => const LoginScreen()),
+                      );
+                    }
                   } else {
                     provider.sortSongsBy(result);
                   }
@@ -94,6 +160,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   const PopupMenuItem<String>(
                     value: 'restore_hidden',
                     child: Text('Restaurar ocultas', style: TextStyle(color: Colors.redAccent)),
+                  ),
+                  const PopupMenuDivider(),
+                  const PopupMenuItem<String>(
+                    value: 'logout',
+                    child: Text('Cambiar Usuario', style: TextStyle(color: Colors.orangeAccent)),
                   ),
                 ],
               );
