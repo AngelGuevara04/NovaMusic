@@ -8,6 +8,7 @@ import 'hidden_songs_screen.dart';
 import 'downloader_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
+import 'equalizer_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -125,7 +126,12 @@ class _HomeScreenState extends State<HomeScreen> {
               return PopupMenuButton<String>(
                 icon: const Icon(Icons.sort, color: Colors.white),
                 onSelected: (String result) async {
-                  if (result == 'restore_hidden') {
+                  if (result == 'equalizer') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const EqualizerScreen()),
+                    );
+                  } else if (result == 'restore_hidden') {
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (context) => const HiddenSongsScreen()),
@@ -157,6 +163,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Text('Ordenar por Fecha (Nuevos)'),
                   ),
                   const PopupMenuDivider(),
+                  const PopupMenuItem<String>(
+                    value: 'equalizer',
+                    child: Text('Ecualizador y Audio', style: TextStyle(color: Colors.deepPurpleAccent)),
+                  ),
                   const PopupMenuItem<String>(
                     value: 'restore_hidden',
                     child: Text('Restaurar ocultas', style: TextStyle(color: Colors.redAccent)),

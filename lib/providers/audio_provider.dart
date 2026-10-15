@@ -6,6 +6,7 @@ import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/equalizer_service.dart';
 
 class AudioProvider with ChangeNotifier {
   final OnAudioQuery _audioQuery = OnAudioQuery();
@@ -78,6 +79,12 @@ class AudioProvider with ChangeNotifier {
   void _listenToPlayerEvents() {
     _audioPlayer.playerStateStream.listen((state) {
       _isPlaying = state.playing;
+      if (state.playing && !EqualizerService.isInitialized) {
+        final sessionId = _audioPlayer.androidAudioSessionId;
+        if (sessionId != null) {
+          EqualizerService.init(sessionId);
+        }
+      }
       notifyListeners();
     });
 

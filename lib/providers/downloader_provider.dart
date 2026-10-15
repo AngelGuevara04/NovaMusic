@@ -156,8 +156,35 @@ class DownloaderProvider extends ChangeNotifier {
     await searchYoutube("$randomArtist oficial");
   }
 
-  void startDownload(String url, {required Function() onSuccess}) {
+  Future<void> startDownload(String url, {required Function() onSuccess}) async {
     if (url.isEmpty) return;
+
+    // Detectar si es una playlist de YouTube
+    if (url.contains('list=') || url.contains('/playlist')) {
+      try {
+        final playlistIdMatch = RegExp(r'[?&]list=([^#&?]+)').firstMatch(url);
+        final playlistId = playlistIdMatch?.group(1) ?? url;
+        
+        var playlistVideos = _yt.playlists.getVideos(playlistId);
+        int queuedCount = 0;
+
+        await for (var video in playlistVideos) {
+          final newTask = DownloadTask(url: video.url);
+          newTask.title = video.title;
+          _activeDownloads.insert(0, newTask);
+          notifyListeners();
+          queuedCount++;
+          
+          // Ejecutar en serie o encolado
+          _processDownloadTask(newTask, onSuccess);
+          if (queuedCount >= 25) break; // Límite razonable por lote
+        }
+        return;
+      } catch (e) {
+        print("Error analizando playlist: $e");
+        // Continuar como descarga normal si falla
+      }
+    }
     
     final newTask = DownloadTask(url: url);
     _activeDownloads.insert(0, newTask);
@@ -277,13 +304,28 @@ class DownloaderProvider extends ChangeNotifier {
     notifyListeners();
     _showProgressNotification(task, -1, "Extrayendo audio de alta calidad...");
 
-    File tempAudioFile = File('${tempDir.path}/${task.id}.mp3');
-    if (await tempAudioFile.exists()) await tempAudioFile.delete();
+    // Descargar portada en alta resolución
+    File tempThumbFile = File('${tempDir.path}/${task.id}_thumb.jpg');
+    bool hasThumbnail = false;
+    try {
+      final thumbUrl = video.thumbnails.maxResUrl.isNotEmpty ? video.thumbnails.maxResUrl : video.thumbnails.highResUrl;
+      final thumbRes = await http.get(Uri.parse(thumbUrl)).timeout(const Duration(seconds: 4));
+      if (thumbRes.statusCode == 200) {
+        await tempThumbFile.writeAsBytes(thumbRes.bodyBytes);
+        hasThumbnail = true;
+      }
+    } catch (_) {}
 
-    // Inyectar metadatos y quitar silencios únicamente al inicio y al final de la canción
+    // Inyectar metadatos, portada HD y quitar silencios únicamente al inicio y al final de la canción
     String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse"';
     String metadata = '-metadata title="$songTitle" -metadata artist="$author"';
-    String command = '-y -i "${tempVideoFile.path}" -vn $afFilter -b:a 192k $metadata "${tempAudioFile.path}"';
+    
+    String command;
+    if (hasThumbnail) {
+      command = '-y -i "${tempVideoFile.path}" -i "${tempThumbFile.path}" -map 0:a -map 1:v $afFilter -b:a 192k -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${tempAudioFile.path}"';
+    } else {
+      command = '-y -i "${tempVideoFile.path}" -vn $afFilter -b:a 192k $metadata "${tempAudioFile.path}"';
+    }
     
     var session = await FFmpegKit.execute(command);
     var returnCode = await session.getReturnCode();
@@ -296,6 +338,7 @@ class DownloaderProvider extends ChangeNotifier {
 
     if (await tempVideoFile.exists()) await tempVideoFile.delete();
     if (await tempAudioFile.exists()) await tempAudioFile.delete();
+    if (await tempThumbFile.exists()) await tempThumbFile.delete();
   }
 
   Future<void> _downloadFallbackMethod(DownloadTask task, Function() onSuccess) async {
