@@ -280,9 +280,10 @@ class DownloaderProvider extends ChangeNotifier {
     File tempAudioFile = File('${tempDir.path}/${task.id}.mp3');
     if (await tempAudioFile.exists()) await tempAudioFile.delete();
 
-    // Inyectar metadatos con ffmpeg
+    // Inyectar metadatos y quitar silencios únicamente al inicio y al final de la canción
+    String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse"';
     String metadata = '-metadata title="$songTitle" -metadata artist="$author"';
-    String command = '-y -i "${tempVideoFile.path}" -vn -b:a 192k $metadata "${tempAudioFile.path}"';
+    String command = '-y -i "${tempVideoFile.path}" -vn $afFilter -b:a 192k $metadata "${tempAudioFile.path}"';
     
     var session = await FFmpegKit.execute(command);
     var returnCode = await session.getReturnCode();

@@ -64,14 +64,6 @@ class AudioProvider with ChangeNotifier {
 
   Future<void> _init() async {
     await _loadHiddenSongs();
-    
-    // Configurar salto automático de silencios (gapless/skip silence)
-    try {
-      await _audioPlayer.setSkipSilenceEnabled(true);
-    } catch (e) {
-      print("Skip silence not supported on this platform: $e");
-    }
-
     _listenToPlayerEvents();
     await checkAndRequestPermissions();
     
@@ -160,6 +152,16 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> checkAndRequestPermissions() async {
+    // Permiso de notificaciones (Android 13+)
+    if (await Permission.notification.isDenied) {
+      await Permission.notification.request();
+    }
+
+    // Permiso de optimización de batería para no detener la música en segundo plano
+    if (await Permission.ignoreBatteryOptimizations.isDenied) {
+      await Permission.ignoreBatteryOptimizations.request();
+    }
+
     PermissionStatus status = await Permission.audio.status;
     if (!status.isGranted) {
       status = await Permission.audio.request();
@@ -224,11 +226,30 @@ class AudioProvider with ChangeNotifier {
     _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
     
     _applySort();
-    await _setupAudioSource();
+
+    // Save the ID of the currently playing song before updating the playlist
+    final currentSongId = currentSong?.id;
+    final wasPlaying = _isPlaying;
+    final savedPosition = _currentPosition;
+
+    if (_playlist == null) {
+      await _setupAudioSource();
+    } else {
+      // Rebuilding the audio source smoothly without kicking player to song 0
+      final newIndex = currentSongId != null ? songs.indexWhere((s) => s.id == currentSongId) : 0;
+      await _setupAudioSource(
+        initialIndex: newIndex != -1 ? newIndex : 0,
+        initialPosition: savedPosition,
+      );
+      if (wasPlaying && currentSongId != null) {
+        _audioPlayer.play();
+      }
+    }
+
     notifyListeners();
   }
 
-  Future<void> _setupAudioSource() async {
+  Future<void> _setupAudioSource({int initialIndex = 0, Duration initialPosition = Duration.zero}) async {
     if (_visibleSongs.isEmpty) return;
 
     _playlist = ConcatenatingAudioSource(
@@ -247,7 +268,12 @@ class AudioProvider with ChangeNotifier {
     );
 
     try {
-      await _audioPlayer.setAudioSource(_playlist!);
+      await _audioPlayer.setAudioSource(
+        _playlist!,
+        initialIndex: initialIndex,
+        initialPosition: initialPosition,
+      );
+      _currentIndex = initialIndex;
       _needsPlaylistRebuild = false;
     } catch (e) {
       print("Error setting audio source: $e");
