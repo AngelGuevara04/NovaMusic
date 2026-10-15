@@ -23,7 +23,7 @@ Future<void> main() async {
     androidNotificationOngoing: true,
     androidShowNotificationBadge: true,
     androidStopForegroundOnPause: false,
-    androidNotificationIcon: 'mipmap/launcher_icon',
+    androidNotificationIcon: 'drawable/ic_notification',
     notificationColor: const Color(0xFF7C4DFF),
   );
   
