@@ -64,12 +64,26 @@ class AudioProvider with ChangeNotifier {
   DateTime? get sleepTimerEndTime => _sleepTimerEndTime;
 
   Future<void> _init() async {
+    final prefs = await SharedPreferences.getInstance();
+    _currentSort = prefs.getString('pref_sort') ?? 'title';
+    _isShuffle = prefs.getBool('pref_shuffle') ?? false;
+    final savedLoop = prefs.getString('pref_loop') ?? 'off';
+    if (savedLoop == 'one') {
+      _loopMode = LoopMode.one;
+    } else if (savedLoop == 'all') {
+      _loopMode = LoopMode.all;
+    } else {
+      _loopMode = LoopMode.off;
+    }
+    
+    await _audioPlayer.setShuffleModeEnabled(_isShuffle);
+    await _audioPlayer.setLoopMode(_loopMode);
+
     await _loadHiddenSongs();
     _listenToPlayerEvents();
     await checkAndRequestPermissions();
     
     // Auto-sync from Supabase if logged in
-    final prefs = await SharedPreferences.getInstance();
     final username = prefs.getString('current_username');
     if (username != null && username.isNotEmpty) {
       loadPreferencesFromSupabase(username);
@@ -188,6 +202,8 @@ class AudioProvider with ChangeNotifier {
 
   Future<void> sortSongsBy(String sortType) async {
     _currentSort = sortType;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('pref_sort', sortType);
     _applySort();
     _needsPlaylistRebuild = true;
     notifyListeners();
@@ -332,18 +348,26 @@ class AudioProvider with ChangeNotifier {
     if (_isShuffle) {
       await _audioPlayer.shuffle();
     }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('pref_shuffle', _isShuffle);
     notifyListeners();
   }
 
   Future<void> toggleRepeat() async {
+    String loopStr = 'off';
     if (_loopMode == LoopMode.off) {
       _loopMode = LoopMode.all;
+      loopStr = 'all';
     } else if (_loopMode == LoopMode.all) {
       _loopMode = LoopMode.one;
+      loopStr = 'one';
     } else {
       _loopMode = LoopMode.off;
+      loopStr = 'off';
     }
     await _audioPlayer.setLoopMode(_loopMode);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('pref_loop', loopStr);
     notifyListeners();
   }
 

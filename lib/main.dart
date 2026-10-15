@@ -18,9 +18,13 @@ Future<void> main() async {
   );
 
   await JustAudioBackground.init(
-    androidNotificationChannelId: 'com.ryanheise.bg_demo.channel.audio',
-    androidNotificationChannelName: 'Audio playback',
+    androidNotificationChannelId: 'com.ajgm1.music.channel.audio',
+    androidNotificationChannelName: 'Reproductor Nova Music',
     androidNotificationOngoing: true,
+    androidShowNotificationBadge: true,
+    androidStopForegroundOnPause: false,
+    androidNotificationIcon: 'mipmap/launcher_icon',
+    notificationColor: const Color(0xFF7C4DFF),
   );
   
   final prefs = await SharedPreferences.getInstance();
