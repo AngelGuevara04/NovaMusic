@@ -316,6 +316,9 @@ class DownloaderProvider extends ChangeNotifier {
       }
     } catch (_) {}
 
+    File tempAudioFile = File('${tempDir.path}/${task.id}.mp3');
+    if (await tempAudioFile.exists()) await tempAudioFile.delete();
+
     // Inyectar metadatos, portada HD y quitar silencios únicamente al inicio y al final de la canción
     String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse"';
     String metadata = '-metadata title="$songTitle" -metadata artist="$author"';
