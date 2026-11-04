@@ -76,7 +76,7 @@ class MyApp extends StatelessWidget {
           actionTextColor: Color(0xFFB388FF),
           behavior: SnackBarBehavior.floating,
         ),
-        dialogTheme: const DialogTheme(
+        dialogTheme: const DialogThemeData(
           backgroundColor: Color(0xFF1E1E1E),
           titleTextStyle: TextStyle(color: Colors.white, fontSize: 19, fontWeight: FontWeight.bold),
           contentTextStyle: TextStyle(color: Color(0xFFEEEEEE), fontSize: 15),
