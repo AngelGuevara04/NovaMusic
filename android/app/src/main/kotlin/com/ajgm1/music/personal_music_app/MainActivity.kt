@@ -1,7 +1,12 @@
 package com.ajgm1.music.personal_music_app
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
+import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -14,6 +19,7 @@ class MainActivity : AudioServiceActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        createNotificationChannel()
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -79,6 +85,35 @@ class MainActivity : AudioServiceActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channelId = "com.ajgm1.music.channel.audio.v4"
+            val channelName = "Reproductor Nova Music"
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            try {
+                notificationManager.deleteNotificationChannel("com.ajgm1.music.channel.audio")
+                notificationManager.deleteNotificationChannel("com.ajgm1.music.channel.audio.v2")
+                notificationManager.deleteNotificationChannel("com.ajgm1.music.channel.audio.v3")
+            } catch (e: Exception) {
+                // Ignore
+            }
+
+            val channel = NotificationChannel(
+                channelId,
+                channelName,
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Controles de reproducción multimedia"
+                setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setSound(null, null)
+                enableVibration(false)
+            }
+            notificationManager.createNotificationChannel(channel)
         }
     }
 }

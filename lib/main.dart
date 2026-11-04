@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:just_audio_background/just_audio_background.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'providers/audio_provider.dart';
@@ -18,14 +19,18 @@ Future<void> main() async {
   );
 
   await JustAudioBackground.init(
-    androidNotificationChannelId: 'com.ajgm1.music.channel.audio',
+    androidNotificationChannelId: 'com.ajgm1.music.channel.audio.v4',
     androidNotificationChannelName: 'Reproductor Nova Music',
     androidNotificationOngoing: true,
     androidShowNotificationBadge: true,
     androidStopForegroundOnPause: false,
-    androidNotificationIcon: 'drawable/ic_notification',
+    androidNotificationIcon: 'mipmap/ic_notification',
     notificationColor: const Color(0xFF7C4DFF),
   );
+
+  // Inicializar y configurar sesión de audio para música y reproducción en segundo plano
+  final session = await AudioSession.instance;
+  await session.configure(const AudioSessionConfiguration.music());
   
   final prefs = await SharedPreferences.getInstance();
   final initialUser = prefs.getString('current_username');

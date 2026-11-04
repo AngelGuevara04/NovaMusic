@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -79,6 +80,9 @@ class AudioProvider with ChangeNotifier {
     await _audioPlayer.setShuffleModeEnabled(_isShuffle);
     await _audioPlayer.setLoopMode(_loopMode);
 
+    // Configurar sesión de audio profesional para manejar foco y segundo plano
+    await _setupAudioSession();
+
     await _loadHiddenSongs();
     _listenToPlayerEvents();
     await checkAndRequestPermissions();
@@ -88,6 +92,40 @@ class AudioProvider with ChangeNotifier {
     if (username != null && username.isNotEmpty) {
       loadPreferencesFromSupabase(username);
     }
+  }
+
+  Future<void> _setupAudioSession() async {
+    final session = await AudioSession.instance;
+    await session.configure(const AudioSessionConfiguration.music());
+
+    session.interruptionEventStream.listen((event) {
+      if (event.begin) {
+        switch (event.type) {
+          case AudioInterruptionType.duck:
+            _audioPlayer.setVolume(0.5);
+            break;
+          case AudioInterruptionType.pause:
+          case AudioInterruptionType.unknown:
+            _audioPlayer.pause();
+            break;
+        }
+      } else {
+        switch (event.type) {
+          case AudioInterruptionType.duck:
+            _audioPlayer.setVolume(1.0);
+            break;
+          case AudioInterruptionType.pause:
+            _audioPlayer.play();
+            break;
+          case AudioInterruptionType.unknown:
+            break;
+        }
+      }
+    });
+
+    session.becomingNoisyEventStream.listen((_) {
+      _audioPlayer.pause();
+    });
   }
 
   void _listenToPlayerEvents() {
@@ -233,10 +271,8 @@ class AudioProvider with ChangeNotifier {
     for (var song in fetchedSongs) {
       if (song.isMusic == true || song.isPodcast == false) {
         final title = song.title.toLowerCase().trim();
-        final artist = song.artist?.toLowerCase().trim() ?? '';
         final size = song.size ?? 0;
         
-        // Use title and size as a robust duplicate key to prevent same files appearing twice
         final key = '${title}_$size';
         
         if (!uniqueSongs.containsKey(key)) {
@@ -258,7 +294,6 @@ class AudioProvider with ChangeNotifier {
     if (_playlist == null) {
       await _setupAudioSource();
     } else {
-      // Rebuilding the audio source smoothly without kicking player to song 0
       final newIndex = currentSongId != null ? songs.indexWhere((s) => s.id == currentSongId) : 0;
       await _setupAudioSource(
         initialIndex: newIndex != -1 ? newIndex : 0,
@@ -277,13 +312,21 @@ class AudioProvider with ChangeNotifier {
 
     _playlist = ConcatenatingAudioSource(
       children: songs.map((song) {
+        final artistName = (song.artist != null && song.artist!.isNotEmpty && song.artist != '<unknown>')
+            ? song.artist!
+            : 'Artista desconocido';
+        final albumName = (song.album != null && song.album!.isNotEmpty && song.album != '<unknown>')
+            ? song.album!
+            : 'Álbum desconocido';
+        final songTitle = song.title.trim().isNotEmpty ? song.title.trim() : 'Canción sin título';
+
         return AudioSource.uri(
           Uri.parse(song.uri!),
           tag: MediaItem(
             id: song.id.toString(),
-            album: song.album ?? 'Album desconocido',
-            title: song.title,
-            artist: song.artist ?? 'Artista desconocido',
+            album: albumName,
+            title: songTitle,
+            artist: artistName,
             artUri: Uri.parse('content://media/external/audio/media/${song.id}/albumart'),
           ),
         );
@@ -310,6 +353,8 @@ class AudioProvider with ChangeNotifier {
     
     _currentIndex = index;
     try {
+      final session = await AudioSession.instance;
+      await session.setActive(true);
       await _audioPlayer.seek(Duration.zero, index: index);
       await _audioPlayer.play();
     } catch (e) {
@@ -319,9 +364,11 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> playPause() async {
+    final session = await AudioSession.instance;
     if (_audioPlayer.playing) {
       await _audioPlayer.pause();
     } else {
+      await session.setActive(true);
       await _audioPlayer.play();
     }
   }
