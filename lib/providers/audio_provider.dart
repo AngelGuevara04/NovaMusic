@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
@@ -7,6 +8,7 @@ import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:media_scanner/media_scanner.dart';
 import '../services/equalizer_service.dart';
 
 class AudioProvider with ChangeNotifier {
@@ -105,8 +107,10 @@ class AudioProvider with ChangeNotifier {
             _audioPlayer.setVolume(0.5);
             break;
           case AudioInterruptionType.pause:
-          case AudioInterruptionType.unknown:
             _audioPlayer.pause();
+            break;
+          case AudioInterruptionType.unknown:
+            // Do not pause on unknown events (e.g. minimizing on MagicOS/Android 14)
             break;
         }
       } else {
@@ -427,6 +431,31 @@ class AudioProvider with ChangeNotifier {
       _needsPlaylistRebuild = true;
       
       notifyListeners();
+    }
+  }
+
+  Future<bool> deletePhysicalSong(SongModel song) async {
+    try {
+      final file = File(song.data);
+      if (await file.exists()) {
+        await file.delete();
+      }
+      try {
+        await MediaScanner.loadMedia(path: song.data);
+      } catch (e) {
+        print("MediaScanner error: $e");
+      }
+      _allSongs.removeWhere((s) => s.id == song.id);
+      _visibleSongs.removeWhere((s) => s.id == song.id);
+      _hiddenSongIds.remove(song.id);
+      await _saveHiddenSongs();
+      _needsPlaylistRebuild = true;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print("Error deleting physical song: $e");
+      await hideSong(song);
+      return false;
     }
   }
 

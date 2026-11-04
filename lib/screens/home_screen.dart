@@ -9,6 +9,7 @@ import 'downloader_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
 import 'equalizer_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -38,8 +39,8 @@ class _HomeScreenState extends State<HomeScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (provider.sleepTimerEndTime != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12),
                   child: Text(
                     'Temporizador activo',
                     style: TextStyle(color: Colors.deepPurpleAccent),
@@ -104,6 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.cloud_download, color: Colors.white),
+            tooltip: 'Descargar música',
             onPressed: () {
               Navigator.push(
                 context,
@@ -121,12 +123,27 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, color: Colors.white),
+            tooltip: 'Configuración',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsScreen()),
+              );
+            },
+          ),
           Consumer<AudioProvider>(
             builder: (context, provider, child) {
               return PopupMenuButton<String>(
                 icon: const Icon(Icons.sort, color: Colors.white),
                 onSelected: (String result) async {
-                  if (result == 'equalizer') {
+                  if (result == 'settings') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const SettingsScreen()),
+                    );
+                  } else if (result == 'equalizer') {
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (context) => const EqualizerScreen()),
@@ -164,6 +181,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const PopupMenuDivider(),
                   const PopupMenuItem<String>(
+                    value: 'settings',
+                    child: Text('Configuración', style: TextStyle(color: Colors.white)),
+                  ),
+                  const PopupMenuItem<String>(
                     value: 'equalizer',
                     child: Text('Ecualizador y Audio', style: TextStyle(color: Colors.deepPurpleAccent)),
                   ),
@@ -182,6 +203,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search, color: Colors.white),
+            tooltip: _isSearching ? 'Cerrar búsqueda' : 'Buscar',
             onPressed: () {
               setState(() {
                 _isSearching = !_isSearching;
@@ -213,16 +235,17 @@ class _HomeScreenState extends State<HomeScreen> {
                       backgroundColor: Theme.of(context).primaryColor,
                       foregroundColor: Colors.white,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                     ),
-                    icon: const Icon(Icons.download),
-                    label: const Text('Ir a Descargas'),
                     onPressed: () {
                       Navigator.push(
                         context,
                         MaterialPageRoute(builder: (context) => const DownloaderScreen()),
                       );
                     },
-                  )
+                    icon: const Icon(Icons.download),
+                    label: const Text('Descargar canciones gratis'),
+                  ),
                 ],
               ),
             );
@@ -233,45 +256,33 @@ class _HomeScreenState extends State<HomeScreen> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
                 child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: audioProvider.isShuffle ? Theme.of(context).primaryColor : const Color(0xFF2C2C2C),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        icon: const Icon(Icons.shuffle),
-                        label: const Text('Aleatorio', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        onPressed: () {
-                          if (!audioProvider.isShuffle) {
-                            audioProvider.toggleShuffle();
-                          }
-                        },
+                    Text(
+                      '${audioProvider.songs.length} Canciones',
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: !audioProvider.isShuffle ? Theme.of(context).primaryColor : const Color(0xFF2C2C2C),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        icon: const Icon(Icons.format_list_numbered),
-                        label: const Text('En orden', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        onPressed: () {
-                          if (audioProvider.isShuffle) {
-                            audioProvider.toggleShuffle();
-                          }
-                        },
+                    IconButton(
+                      icon: Icon(
+                        audioProvider.isShuffle ? Icons.shuffle_on_outlined : Icons.shuffle,
+                        color: audioProvider.isShuffle ? Theme.of(context).primaryColor : Colors.white54,
                       ),
+                      onPressed: () {
+                        audioProvider.toggleShuffle();
+                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              audioProvider.isShuffle ? 'Modo aleatorio activado' : 'Modo aleatorio desactivado',
+                            ),
+                            duration: const Duration(seconds: 1),
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -293,11 +304,19 @@ class _HomeScreenState extends State<HomeScreen> {
                         song: song,
                         index: index,
                         onTap: () {
-                          audioProvider.playSong(index);
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => const PlayerScreen()),
-                          );
+                          // Si ya se está reproduciendo, expandir el reproductor en lugar de reiniciar/pausar
+                          if (audioProvider.currentSong?.id == song.id) {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const PlayerScreen()),
+                            );
+                          } else {
+                            audioProvider.playSong(index);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const PlayerScreen()),
+                            );
+                          }
                         },
                       );
                     },

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/audio_provider.dart';
 
 class SongTile extends StatelessWidget {
@@ -32,25 +33,105 @@ class SongTile extends StatelessWidget {
         ),
         child: const Icon(Icons.delete, color: Colors.white),
       ),
-      onDismissed: (direction) {
-        audioProvider.hideSong(song);
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${song.title} eliminada'),
-            backgroundColor: Colors.black87,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            action: SnackBarAction(
-              label: 'Deshacer',
-              textColor: Theme.of(context).primaryColor,
-              onPressed: () {
-                audioProvider.unhideSong(song);
-              },
+      confirmDismiss: (direction) async {
+        final prefs = await SharedPreferences.getInstance();
+        final autoDelete = prefs.getBool('auto_delete_from_device') ?? false;
+
+        if (autoDelete) {
+          await audioProvider.deletePhysicalSong(song);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('${song.title} eliminada del dispositivo'),
+                backgroundColor: Colors.black87,
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            );
+          }
+          return true;
+        }
+
+        if (!context.mounted) return false;
+
+        final choice = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.delete_outline, color: Colors.redAccent),
+                SizedBox(width: 8),
+                Expanded(child: Text('¿Eliminar canción?', style: TextStyle(color: Colors.white, fontSize: 18))),
+              ],
             ),
+            content: Text(
+              '¿Deseas solo quitar "${song.title}" de la lista o borrar el archivo permanentemente de tu dispositivo?',
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'cancel'),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
+              ),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.deepPurpleAccent),
+                ),
+                onPressed: () => Navigator.pop(ctx, 'hide'),
+                child: const Text('Solo de la lista', style: TextStyle(color: Colors.deepPurpleAccent)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                ),
+                onPressed: () => Navigator.pop(ctx, 'delete'),
+                child: const Text('Borrar del celular', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
         );
+
+        if (choice == 'hide') {
+          await audioProvider.hideSong(song);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('${song.title} quitada de la lista'),
+                backgroundColor: Colors.black87,
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                action: SnackBarAction(
+                  label: 'Deshacer',
+                  textColor: Theme.of(context).primaryColor,
+                  onPressed: () => audioProvider.unhideSong(song),
+                ),
+              ),
+            );
+          }
+          return true;
+        } else if (choice == 'delete') {
+          await audioProvider.deletePhysicalSong(song);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('${song.title} borrada del celular'),
+                backgroundColor: Colors.black87,
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            );
+          }
+          return true;
+        }
+
+        return false;
       },
+      onDismissed: (direction) {},
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
@@ -85,7 +166,7 @@ class SongTile extends StatelessWidget {
             song.artist ?? "Artista desconocido",
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(
+            style: const TextStyle(
               color: Colors.white60,
               fontSize: 12,
             ),

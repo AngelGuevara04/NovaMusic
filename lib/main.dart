@@ -19,12 +19,12 @@ Future<void> main() async {
   );
 
   await JustAudioBackground.init(
-    androidNotificationChannelId: 'com.ajgm1.music.channel.audio.v5',
+    androidNotificationChannelId: 'com.ajgm1.music.channel.audio.v6',
     androidNotificationChannelName: 'Reproductor Nova Music',
     androidNotificationOngoing: true,
     androidShowNotificationBadge: true,
     androidStopForegroundOnPause: false,
-    androidNotificationIcon: 'drawable/ic_notification',
+    androidNotificationIcon: 'mipmap/ic_launcher',
     notificationColor: const Color(0xFF7C4DFF),
   );
 

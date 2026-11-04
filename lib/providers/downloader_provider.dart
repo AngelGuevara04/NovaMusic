@@ -9,8 +9,6 @@ import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import 'package:media_scanner/media_scanner.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:just_audio/just_audio.dart';
-import 'package:just_audio_background/just_audio_background.dart';
 
 class DownloadTask {
   String id = UniqueKey().toString();
@@ -32,7 +30,6 @@ class DownloaderProvider extends ChangeNotifier {
   List<Video> _searchResults = [];
   bool _isSearching = false;
 
-  final AudioPlayer _previewPlayer = AudioPlayer();
   String? _previewingUrl;
   bool _isDownloadingPreview = false;
 
@@ -40,7 +37,10 @@ class DownloaderProvider extends ChangeNotifier {
   bool get isSearching => _isSearching;
   String? get previewingUrl => _previewingUrl;
   bool get isDownloadingPreview => _isDownloadingPreview;
-  bool get isPreviewPlaying => _previewPlayer.playing;
+  bool get isPreviewPlaying => false;
+
+  String? _currentRecommendationArtist;
+  String? get currentRecommendationArtist => _currentRecommendationArtist;
 
   final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
   
@@ -147,13 +147,27 @@ class DownloaderProvider extends ChangeNotifier {
 
   Future<void> loadRecommendations(List<String> artists) async {
     if (artists.isEmpty) {
+      _currentRecommendationArtist = "Top 2026";
       await searchYoutube("Musica 2026");
       return;
     }
     
-    artists.shuffle();
-    String randomArtist = artists.first;
-    await searchYoutube("$randomArtist oficial");
+    final validArtists = artists.where((a) => a.trim().isNotEmpty && a != '<unknown>' && a != 'Unknown').toList();
+    if (validArtists.isEmpty) {
+      _currentRecommendationArtist = "Top 2026";
+      await searchYoutube("Musica 2026");
+      return;
+    }
+
+    validArtists.shuffle();
+    String randomArtist = validArtists.first;
+    _currentRecommendationArtist = randomArtist;
+    await searchYoutube("$randomArtist canciones");
+  }
+
+  Future<void> recommendForArtist(String artist) async {
+    _currentRecommendationArtist = artist;
+    await searchYoutube("$artist canciones");
   }
 
   Future<void> startDownload(String url, {required Function() onSuccess}) async {
@@ -175,14 +189,12 @@ class DownloaderProvider extends ChangeNotifier {
           notifyListeners();
           queuedCount++;
           
-          // Ejecutar en serie o encolado
           _processDownloadTask(newTask, onSuccess);
-          if (queuedCount >= 25) break; // Límite razonable por lote
+          if (queuedCount >= 25) break;
         }
         return;
       } catch (e) {
         print("Error analizando playlist: $e");
-        // Continuar como descarga normal si falla
       }
     }
     
@@ -257,12 +269,10 @@ class DownloaderProvider extends ChangeNotifier {
     String author = video.author;
     String songTitle = video.title;
     
-    // Limpiar author ("VEVO", "- Topic", etc.)
     author = author.replaceAll(RegExp(r'VEVO', caseSensitive: false), '')
                    .replaceAll(RegExp(r'- Topic', caseSensitive: false), '')
                    .trim();
                    
-    // Si el título tiene el formato "Artista - Canción"
     if (songTitle.contains(' - ')) {
       var parts = songTitle.split(' - ');
       if (parts.length >= 2) {
@@ -271,7 +281,6 @@ class DownloaderProvider extends ChangeNotifier {
       }
     }
     
-    // Limpiar corchetes tipo [Official Music Video]
     songTitle = songTitle.replaceAll(RegExp(r'\[.*?\]|\(.*?\)', caseSensitive: false), '').trim();
     if (author.isEmpty) author = "Desconocido";
     if (songTitle.isEmpty) songTitle = "Canción desconocida";
@@ -304,7 +313,6 @@ class DownloaderProvider extends ChangeNotifier {
     notifyListeners();
     _showProgressNotification(task, -1, "Extrayendo audio de alta calidad...");
 
-    // Descargar portada en alta resolución
     File tempThumbFile = File('${tempDir.path}/${task.id}_thumb.jpg');
     bool hasThumbnail = false;
     try {
@@ -319,7 +327,6 @@ class DownloaderProvider extends ChangeNotifier {
     File tempAudioFile = File('${tempDir.path}/${task.id}.mp3');
     if (await tempAudioFile.exists()) await tempAudioFile.delete();
 
-    // Inyectar metadatos, portada HD y quitar silencios únicamente al inicio y al final de la canción
     String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse"';
     String metadata = '-metadata title="$songTitle" -metadata artist="$author"';
     
@@ -441,82 +448,12 @@ class DownloaderProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> stopPreview() async {
-    await _previewPlayer.stop();
-    _previewingUrl = null;
-    _isDownloadingPreview = false;
-    notifyListeners();
-  }
-
-  Future<void> togglePreview(Video video) async {
-    if (_previewingUrl == video.url && _previewPlayer.playing) {
-      await _previewPlayer.pause();
-      notifyListeners();
-      return;
-    } else if (_previewingUrl == video.url && !_previewPlayer.playing && !_isDownloadingPreview) {
-      await _previewPlayer.play();
-      notifyListeners();
-      return;
-    }
-
-    await stopPreview();
-    _previewingUrl = video.url;
-    _isDownloadingPreview = true;
-    notifyListeners();
-
-    try {
-      final manifest = await _yt.videos.streamsClient.getManifest(video.url).timeout(const Duration(seconds: 15));
-      final streamInfo = manifest.muxed.withHighestBitrate();
-
-      final tempDir = await getTemporaryDirectory();
-      final tempFile = File('${tempDir.path}/preview_${video.id.value}.mp3');
-
-      if (await tempFile.exists()) {
-        await tempFile.delete();
-      }
-
-      String command = '-y -i "${streamInfo.url}" -t 30 -vn -b:a 96k "${tempFile.path}"';
-      var session = await FFmpegKit.execute(command);
-      var returnCode = await session.getReturnCode();
-
-      if (!ReturnCode.isSuccess(returnCode)) {
-        throw Exception('FFmpeg failed to create preview');
-      }
-
-      await _previewPlayer.setAudioSource(
-        AudioSource.file(
-          tempFile.path,
-          tag: MediaItem(
-            id: video.url,
-            title: video.title,
-            artist: video.author,
-          ),
-        ),
-      );
-      
-      _isDownloadingPreview = false;
-      notifyListeners();
-      
-      await _previewPlayer.play();
-
-      _previewPlayer.playerStateStream.listen((state) {
-        if (state.processingState == ProcessingState.completed) {
-          _previewingUrl = null;
-          notifyListeners();
-        }
-      });
-    } catch (e) {
-      debugPrint('Preview error: $e');
-      _previewingUrl = null;
-      _isDownloadingPreview = false;
-      notifyListeners();
-    }
-  }
+  Future<void> stopPreview() async {}
+  Future<void> togglePreview(Video video) async {}
 
   @override
   void dispose() {
     _yt.close();
-    _previewPlayer.dispose();
     super.dispose();
   }
 }
