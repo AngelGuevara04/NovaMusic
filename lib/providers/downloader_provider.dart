@@ -513,9 +513,12 @@ class DownloaderProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final manifest = await _yt.videos.streamsClient.getManifest(video.url).timeout(const Duration(seconds: 15));
+      final manifest = await _yt.videos.streamsClient.getManifest(video.id).timeout(const Duration(seconds: 12));
       StreamInfo? streamInfo;
-      if (manifest.audioOnly.isNotEmpty) {
+      final mp4Audios = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
+      if (mp4Audios.isNotEmpty) {
+        streamInfo = mp4Audios.withHighestBitrate();
+      } else if (manifest.audioOnly.isNotEmpty) {
         streamInfo = manifest.audioOnly.withHighestBitrate();
       } else if (manifest.muxed.isNotEmpty) {
         streamInfo = manifest.muxed.withHighestBitrate();
@@ -525,7 +528,14 @@ class DownloaderProvider extends ChangeNotifier {
         throw Exception("No se encontró stream de audio para vista previa");
       }
 
-      await _previewPlayer.setUrl(streamInfo.url.toString());
+      final contentType = streamInfo.container.name.toLowerCase() == 'mp4' ? 'audio/mp4' : 'audio/webm';
+      await _previewPlayer.setAudioSource(
+        YouTubeAudioSource(
+          uri: streamInfo.url,
+          totalBytes: streamInfo.size.totalBytes,
+          contentType: contentType,
+        ),
+      ).timeout(const Duration(seconds: 12));
       _isDownloadingPreview = false;
       await _previewPlayer.play();
       notifyListeners();
@@ -551,5 +561,39 @@ class DownloaderProvider extends ChangeNotifier {
     _yt.close();
     _previewPlayer.dispose();
     super.dispose();
+  }
+}
+
+
+class YouTubeAudioSource extends StreamAudioSource {
+  final Uri uri;
+  final int totalBytes;
+  final String contentType;
+  final http.Client _client = http.Client();
+
+  YouTubeAudioSource({
+    required this.uri,
+    required this.totalBytes,
+    required this.contentType,
+  });
+
+  @override
+  Future<StreamAudioResponse> request([int? start, int? end]) async {
+    start ??= 0;
+    end ??= totalBytes;
+
+    final request = http.Request('GET', uri);
+    request.headers['Range'] = 'bytes=$start-${end - 1}';
+    request.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
+    final response = await _client.send(request);
+
+    return StreamAudioResponse(
+      rangeRequestsSupported: true,
+      sourceLength: totalBytes,
+      contentLength: response.contentLength ?? (end - start),
+      offset: start,
+      stream: response.stream,
+      contentType: contentType,
+    );
   }
 }
