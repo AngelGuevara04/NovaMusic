@@ -43,6 +43,14 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
   }
 
   List<String> _getLocalArtists(AudioProvider audioProvider) {
+    if (audioProvider.favoriteSongs.isNotEmpty) {
+      final favArtists = audioProvider.favoriteSongs
+          .map((s) => s.artist?.trim() ?? '')
+          .where((a) => a.isNotEmpty && a != '<unknown>' && a != 'Unknown' && a.length > 1)
+          .toSet()
+          .toList();
+      if (favArtists.isNotEmpty) return favArtists;
+    }
     return audioProvider.songs
         .map((s) => s.artist?.trim() ?? '')
         .where((a) => a.isNotEmpty && a != '<unknown>' && a != 'Unknown' && a.length > 1)
@@ -333,7 +341,9 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Recomendado para ti basado en: ${downloader.currentRecommendationArtist}',
+                          (audioProvider.currentUsername != null && audioProvider.currentUsername!.isNotEmpty)
+                              ? 'Recomendado para @${audioProvider.currentUsername} basado en: ${downloader.currentRecommendationArtist}'
+                              : 'Recomendado para ti basado en: ${downloader.currentRecommendationArtist}',
                           style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,

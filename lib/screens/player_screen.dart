@@ -157,8 +157,46 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     fontSize: 16,
                   ),
                 ),
-                
-                const SizedBox(height: 40),
+                const SizedBox(height: 12),
+                Consumer<AudioProvider>(
+                  builder: (context, provider, child) {
+                    final isFav = provider.isFavorite(song.id);
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(20),
+                      onTap: () => provider.toggleFavorite(song),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: isFav ? Colors.redAccent.withValues(alpha: 0.15) : Colors.white10,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: isFav ? Colors.redAccent.withValues(alpha: 0.6) : Colors.white24,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isFav ? Icons.favorite : Icons.favorite_border,
+                              color: isFav ? Colors.redAccent : Colors.white70,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              isFav ? 'En tus favoritas' : 'Añadir a favoritas',
+                              style: TextStyle(
+                                color: isFav ? Colors.redAccent : Colors.white70,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 25),
                 
                 // Progress Bar
                 Consumer<AudioProvider>(

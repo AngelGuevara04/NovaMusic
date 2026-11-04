@@ -197,9 +197,28 @@ class SongTile extends StatelessWidget {
               fontSize: 13,
             ),
           ),
-          trailing: isPlaying
-              ? const Icon(Icons.bar_chart, color: Color(0xFFB388FF))
-              : null,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isPlaying)
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: Icon(Icons.bar_chart, color: Color(0xFFB388FF), size: 22),
+                ),
+              IconButton(
+                splashRadius: 20,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                icon: Icon(
+                  audioProvider.isFavorite(song.id) ? Icons.favorite : Icons.favorite_border,
+                  color: audioProvider.isFavorite(song.id) ? Colors.redAccent : Colors.white38,
+                  size: 22,
+                ),
+                tooltip: audioProvider.isFavorite(song.id) ? 'Quitar de favoritas' : 'Marcar como favorita',
+                onPressed: () => audioProvider.toggleFavorite(song),
+              ),
+            ],
+          ),
           onTap: onTap,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),

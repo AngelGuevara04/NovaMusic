@@ -31,10 +31,13 @@ class _LoginScreenState extends State<LoginScreen> {
           .maybeSingle();
 
       if (response == null) {
-        // Create new user record
+        // Create new user record with cloud favorites support
         await supabase.from('user_preferences').insert({
           'username': username,
           'hidden_songs': [],
+          'favorite_songs': [],
+          'auto_delete': false,
+          'last_active': DateTime.now().toIso8601String(),
         });
       }
 
@@ -97,8 +100,9 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Ingresa un nombre de usuario único',
-                style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 14),
+                'Crea o ingresa tu usuario para respaldar tus canciones favoritas y configuración en la nube',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13, height: 1.4),
               ),
               const SizedBox(height: 32),
               TextField(

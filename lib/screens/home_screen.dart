@@ -73,6 +73,199 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _showUserProfileDialog(BuildContext context, AudioProvider provider) {
+    final username = provider.currentUsername;
+    final isGuest = provider.isGuest;
+    final initial = (!isGuest && username != null && username.isNotEmpty)
+        ? username[0].toUpperCase()
+        : '?';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Row(
+                children: [
+                  Container(
+                    width: 58,
+                    height: 58,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: isGuest
+                            ? [Colors.grey.shade700, Colors.grey.shade600]
+                            : [Colors.deepPurpleAccent, Colors.purpleAccent],
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: isGuest
+                        ? const Icon(Icons.person, color: Colors.white, size: 30)
+                        : Text(
+                            initial,
+                            style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold),
+                          ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isGuest ? 'Modo Invitado' : '@$username',
+                          style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(
+                              isGuest ? Icons.cloud_off : Icons.cloud_done,
+                              color: isGuest ? Colors.orangeAccent : const Color(0xFF69F0AE),
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              isGuest ? 'Sin respaldo en la nube' : 'Perfil sincronizado en Supabase',
+                              style: TextStyle(
+                                color: isGuest ? Colors.orangeAccent : const Color(0xFF69F0AE),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 22),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildStatCard(
+                      icon: Icons.library_music,
+                      color: Colors.deepPurpleAccent,
+                      title: 'Biblioteca',
+                      value: '${provider.totalSongsCount}',
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildStatCard(
+                      icon: Icons.favorite,
+                      color: Colors.redAccent,
+                      title: 'Favoritas',
+                      value: '${provider.totalFavoritesCount}',
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildStatCard(
+                      icon: Icons.visibility_off,
+                      color: Colors.amberAccent,
+                      title: 'Ocultas',
+                      value: '${provider.totalHiddenCount}',
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              if (!isGuest) ...[
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.sync, color: Colors.deepPurpleAccent),
+                  title: const Text('Sincronizar ahora con la Nube', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('Respalda tus favoritas y configuración', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await provider.syncPreferencesToCloud();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('☁️ Perfil y favoritas sincronizados con éxito en la nube'),
+                          backgroundColor: Color(0xFF262626),
+                        ),
+                      );
+                    }
+                  },
+                ),
+              ],
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(isGuest ? Icons.login : Icons.swap_horiz, color: Colors.orangeAccent),
+                title: Text(isGuest ? 'Iniciar Sesión / Crear Usuario' : 'Cambiar de Usuario', style: const TextStyle(color: Colors.white)),
+                subtitle: Text(
+                  isGuest ? 'Guarda tus canciones y favoritas en tu propia cuenta' : 'Accede con otro perfil musical',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.remove('current_username');
+                  if (context.mounted) {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(builder: (context) => const LoginScreen()),
+                    );
+                  }
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildStatCard({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String value,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF282828),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            title,
+            style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -94,13 +287,93 @@ class _HomeScreenState extends State<HomeScreen> {
                   Provider.of<AudioProvider>(context, listen: false).searchSongs(value);
                 },
               )
-            : const Text(
-                'Mi Música',
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
+            : Consumer<AudioProvider>(
+                builder: (context, provider, child) {
+                  final username = provider.currentUsername;
+                  final isGuest = provider.isGuest;
+                  final initial = (!isGuest && username != null && username.isNotEmpty)
+                      ? username[0].toUpperCase()
+                      : '?';
+
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    onTap: () => _showUserProfileDialog(context, provider),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              gradient: LinearGradient(
+                                colors: isGuest
+                                    ? [Colors.grey.shade700, Colors.grey.shade600]
+                                    : [Colors.deepPurpleAccent, Colors.purpleAccent],
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: (isGuest ? Colors.grey : Colors.deepPurpleAccent).withValues(alpha: 0.4),
+                                  blurRadius: 6,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            alignment: Alignment.center,
+                            child: isGuest
+                                ? const Icon(Icons.person_outline, color: Colors.white, size: 18)
+                                : Text(
+                                    initial,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                          ),
+                          const SizedBox(width: 10),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                isGuest ? 'Invitado' : 'Hola, $username',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              Row(
+                                children: [
+                                  Container(
+                                    width: 6,
+                                    height: 6,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: isGuest ? Colors.orangeAccent : Colors.greenAccent,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    isGuest ? 'Sin cuenta' : 'Sincronizado ☁️',
+                                    style: TextStyle(
+                                      color: isGuest ? Colors.orangeAccent : const Color(0xFF69F0AE),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
         actions: [
           IconButton(
@@ -218,6 +491,42 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: Consumer<AudioProvider>(
         builder: (context, audioProvider, child) {
+          if (audioProvider.songs.isEmpty && audioProvider.showOnlyFavorites) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.favorite_border, size: 75, color: Colors.redAccent),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Sin canciones favoritas',
+                      style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Toca el corazón ❤️ en cualquier canción para guardarla en tu perfil de ${audioProvider.isGuest ? "usuario" : audioProvider.currentUsername}.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 14),
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.deepPurpleAccent,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      ),
+                      icon: const Icon(Icons.music_note),
+                      label: const Text('Ver todas las canciones'),
+                      onPressed: () => audioProvider.setShowOnlyFavorites(false),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
           if (audioProvider.songs.isEmpty) {
             return Center(
               child: Column(
@@ -254,23 +563,48 @@ class _HomeScreenState extends State<HomeScreen> {
           return Column(
             children: [
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      '${audioProvider.songs.length} Canciones',
-                      style: const TextStyle(
-                        color: Color(0xFFCCCCCC),
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
+                    FilterChip(
+                      selected: !audioProvider.showOnlyFavorites,
+                      label: Text('Todas (${audioProvider.totalSongsCount})'),
+                      labelStyle: TextStyle(
+                        color: !audioProvider.showOnlyFavorites ? Colors.white : Colors.white70,
+                        fontWeight: !audioProvider.showOnlyFavorites ? FontWeight.bold : FontWeight.normal,
+                        fontSize: 12,
                       ),
+                      selectedColor: Colors.deepPurpleAccent,
+                      backgroundColor: const Color(0xFF242424),
+                      side: BorderSide.none,
+                      onSelected: (_) => audioProvider.setShowOnlyFavorites(false),
                     ),
+                    const SizedBox(width: 8),
+                    FilterChip(
+                      selected: audioProvider.showOnlyFavorites,
+                      avatar: Icon(
+                        Icons.favorite,
+                        color: audioProvider.showOnlyFavorites ? Colors.white : Colors.redAccent,
+                        size: 16,
+                      ),
+                      label: Text('Favoritas (${audioProvider.totalFavoritesCount})'),
+                      labelStyle: TextStyle(
+                        color: audioProvider.showOnlyFavorites ? Colors.white : Colors.white70,
+                        fontWeight: audioProvider.showOnlyFavorites ? FontWeight.bold : FontWeight.normal,
+                        fontSize: 12,
+                      ),
+                      selectedColor: Colors.redAccent,
+                      backgroundColor: const Color(0xFF242424),
+                      side: BorderSide.none,
+                      onSelected: (_) => audioProvider.setShowOnlyFavorites(true),
+                    ),
+                    const Spacer(),
                     IconButton(
                       icon: Icon(
                         audioProvider.isShuffle ? Icons.shuffle_on_outlined : Icons.shuffle,
                         color: audioProvider.isShuffle ? Theme.of(context).primaryColor : Colors.white70,
                       ),
+                      tooltip: 'Modo aleatorio',
                       onPressed: () {
                         audioProvider.toggleShuffle();
                         ScaffoldMessenger.of(context).hideCurrentSnackBar();

@@ -18,6 +18,9 @@ class AudioProvider with ChangeNotifier {
   List<SongModel> _allSongs = [];
   List<SongModel> _visibleSongs = [];
   List<int> _hiddenSongIds = [];
+  List<int> _favoriteSongIds = [];
+  String? _currentUsername;
+  bool _showOnlyFavorites = false;
   
   int? _currentIndex;
   bool _isPlaying = false;
@@ -41,8 +44,87 @@ class AudioProvider with ChangeNotifier {
   }
 
   List<SongModel> get songs {
-    if (_searchQuery.isEmpty) return _visibleSongs;
-    return _visibleSongs.where((s) => s.title.toLowerCase().contains(_searchQuery.toLowerCase()) || (s.artist?.toLowerCase().contains(_searchQuery.toLowerCase()) ?? false)).toList();
+    List<SongModel> baseList = _showOnlyFavorites
+        ? _visibleSongs.where((s) => _favoriteSongIds.contains(s.id)).toList()
+        : _visibleSongs;
+    if (_searchQuery.isEmpty) return baseList;
+    return baseList.where((s) => s.title.toLowerCase().contains(_searchQuery.toLowerCase()) || (s.artist?.toLowerCase().contains(_searchQuery.toLowerCase()) ?? false)).toList();
+  }
+
+  List<int> get favoriteSongIds => _favoriteSongIds;
+  List<SongModel> get favoriteSongs => _allSongs.where((s) => _favoriteSongIds.contains(s.id)).toList();
+  String? get currentUsername => _currentUsername;
+  bool get isGuest => _currentUsername == null || _currentUsername!.isEmpty;
+  bool get showOnlyFavorites => _showOnlyFavorites;
+  int get totalSongsCount => _visibleSongs.length;
+  int get totalFavoritesCount => _favoriteSongIds.length;
+  int get totalHiddenCount => _hiddenSongIds.length;
+
+  void setShowOnlyFavorites(bool val) {
+    if (_showOnlyFavorites != val) {
+      _showOnlyFavorites = val;
+      _needsPlaylistRebuild = true;
+      notifyListeners();
+    }
+  }
+
+  bool isFavorite(int songId) => _favoriteSongIds.contains(songId);
+
+  Future<void> toggleFavorite(SongModel song) async {
+    if (_favoriteSongIds.contains(song.id)) {
+      _favoriteSongIds.remove(song.id);
+    } else {
+      _favoriteSongIds.add(song.id);
+    }
+    _needsPlaylistRebuild = true;
+    notifyListeners();
+    await _saveFavoriteSongs();
+  }
+
+  Future<void> _loadFavoriteSongs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final favList = prefs.getStringList('favorite_songs') ?? [];
+    _favoriteSongIds = favList.map((e) => int.tryParse(e)).whereType<int>().toList();
+  }
+
+  Future<void> _saveFavoriteSongs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final favList = _favoriteSongIds.map((e) => e.toString()).toList();
+    await prefs.setStringList('favorite_songs', favList);
+
+    final username = _currentUsername ?? prefs.getString('current_username');
+    if (username != null && username.isNotEmpty) {
+      try {
+        final supabase = Supabase.instance.client;
+        await supabase.from('user_preferences').update({
+          'favorite_songs': favList,
+          'last_active': DateTime.now().toIso8601String(),
+        }).eq('username', username);
+      } catch (e) {
+        print('Error syncing favorites to Supabase: $e');
+      }
+    }
+  }
+
+  Future<void> syncPreferencesToCloud() async {
+    final prefs = await SharedPreferences.getInstance();
+    final username = _currentUsername ?? prefs.getString('current_username');
+    if (username == null || username.isEmpty) return;
+
+    try {
+      final supabase = Supabase.instance.client;
+      final autoDelete = prefs.getBool('auto_delete_from_device') ?? false;
+      await supabase.from('user_preferences').upsert({
+        'username': username,
+        'hidden_songs': _hiddenSongIds.map((e) => e.toString()).toList(),
+        'favorite_songs': _favoriteSongIds.map((e) => e.toString()).toList(),
+        'auto_delete': autoDelete,
+        'last_active': DateTime.now().toIso8601String(),
+      });
+      notifyListeners();
+    } catch (e) {
+      print('Error syncing all to Supabase: $e');
+    }
   }
   
   int? get currentIndex => _currentIndex;
@@ -85,14 +167,15 @@ class AudioProvider with ChangeNotifier {
     // Configurar sesión de audio profesional para manejar foco y segundo plano
     await _setupAudioSession();
 
+    _currentUsername = prefs.getString('current_username');
     await _loadHiddenSongs();
+    await _loadFavoriteSongs();
     _listenToPlayerEvents();
     await checkAndRequestPermissions();
     
     // Auto-sync from Supabase if logged in
-    final username = prefs.getString('current_username');
-    if (username != null && username.isNotEmpty) {
-      loadPreferencesFromSupabase(username);
+    if (_currentUsername != null && _currentUsername!.isNotEmpty) {
+      loadPreferencesFromSupabase(_currentUsername!);
     }
   }
 
@@ -169,6 +252,7 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> loadPreferencesFromSupabase(String username) async {
+    _currentUsername = username;
     try {
       final supabase = Supabase.instance.client;
       final response = await supabase
@@ -177,14 +261,38 @@ class AudioProvider with ChangeNotifier {
           .eq('username', username)
           .maybeSingle();
 
-      if (response != null && response['hidden_songs'] != null) {
-        List<dynamic> hidden = response['hidden_songs'];
-        _hiddenSongIds = hidden.map((e) => int.parse(e.toString())).toList();
-        
+      if (response != null) {
         final prefs = await SharedPreferences.getInstance();
-        final hiddenList = _hiddenSongIds.map((e) => e.toString()).toList();
-        await prefs.setStringList('hidden_songs', hiddenList);
-        
+
+        // 1. Ocultas
+        if (response['hidden_songs'] != null) {
+          List<dynamic> hidden = response['hidden_songs'];
+          _hiddenSongIds = hidden.map((e) => int.tryParse(e.toString())).whereType<int>().toList();
+          final hiddenList = _hiddenSongIds.map((e) => e.toString()).toList();
+          await prefs.setStringList('hidden_songs', hiddenList);
+        }
+
+        // 2. Favoritas
+        if (response['favorite_songs'] != null) {
+          List<dynamic> favs = response['favorite_songs'];
+          _favoriteSongIds = favs.map((e) => int.tryParse(e.toString())).whereType<int>().toList();
+          final favList = _favoriteSongIds.map((e) => e.toString()).toList();
+          await prefs.setStringList('favorite_songs', favList);
+        }
+
+        // 3. Auto-delete
+        if (response['auto_delete'] != null) {
+          final autoDel = response['auto_delete'] as bool;
+          await prefs.setBool('auto_delete_from_device', autoDel);
+        }
+
+        // 4. Actualizar última conexión
+        try {
+          await supabase.from('user_preferences').update({
+            'last_active': DateTime.now().toIso8601String(),
+          }).eq('username', username);
+        } catch (_) {}
+
         _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
         _applySort();
         _needsPlaylistRebuild = true;
