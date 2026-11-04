@@ -70,6 +70,17 @@ class MyApp extends StatelessWidget {
           elevation: 0,
           iconTheme: IconThemeData(color: Colors.white),
         ),
+        snackBarTheme: const SnackBarThemeData(
+          backgroundColor: Color(0xFF262626),
+          contentTextStyle: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+          actionTextColor: Color(0xFFB388FF),
+          behavior: SnackBarBehavior.floating,
+        ),
+        dialogTheme: const DialogTheme(
+          backgroundColor: Color(0xFF1E1E1E),
+          titleTextStyle: TextStyle(color: Colors.white, fontSize: 19, fontWeight: FontWeight.bold),
+          contentTextStyle: TextStyle(color: Color(0xFFEEEEEE), fontSize: 15),
+        ),
       ),
       home: initialUser != null && initialUser!.isNotEmpty ? const HomeScreen() : const LoginScreen(),
     );

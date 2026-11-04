@@ -152,7 +152,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         subtitle: const Text(
                           'Al deslizar una canción, borrar el archivo directamente del almacenamiento del celular sin preguntar.',
-                          style: TextStyle(color: Colors.white60, fontSize: 13),
+                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13, height: 1.3),
                         ),
                         value: _autoDelete,
                         onChanged: _toggleAutoDelete,
@@ -163,7 +163,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         title: const Text('Canciones Ocultas', style: TextStyle(color: Colors.white)),
                         subtitle: const Text(
                           'Revisa y restaura canciones quitadas de la lista',
-                          style: TextStyle(color: Colors.white60, fontSize: 13),
+                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
                         ),
                         trailing: const Icon(Icons.chevron_right, color: Colors.white38),
                         onTap: () {
@@ -186,7 +186,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: const Text('Ecualizador y Audio', style: TextStyle(color: Colors.white)),
                     subtitle: const Text(
                       'Ajustes de frecuencias y refuerzo de graves',
-                      style: TextStyle(color: Colors.white60, fontSize: 13),
+                      style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
                     ),
                     trailing: const Icon(Icons.chevron_right, color: Colors.white38),
                     onTap: () {
@@ -228,7 +228,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   ),
                                   Text(
                                     'Versión instalada: v${UpdaterService.currentVersion}',
-                                    style: const TextStyle(color: Colors.white54, fontSize: 13),
+                                    style: const TextStyle(color: Color(0xFFE0E0E0), fontSize: 13, fontWeight: FontWeight.w500),
                                   ),
                                 ],
                               ),
@@ -252,7 +252,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             child: Text(
                               _updateMessage!,
                               style: TextStyle(
-                                color: _availableRelease != null ? Colors.greenAccent : Colors.white70,
+                                color: _availableRelease != null ? Colors.greenAccent : Colors.white,
+                                fontWeight: FontWeight.w500,
                                 fontSize: 13,
                               ),
                             ),
@@ -268,7 +269,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const SizedBox(height: 8),
                           Text(
                             _downloadStatus,
-                            style: const TextStyle(color: Colors.white60, fontSize: 12),
+                            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                           ),
                         ],
                         const SizedBox(height: 16),
@@ -328,7 +329,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Text(
         title,
         style: const TextStyle(
-          color: Colors.white38,
+          color: Color(0xFFCE93D8),
           fontSize: 12,
           fontWeight: FontWeight.bold,
           letterSpacing: 1.2,

@@ -312,7 +312,12 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> _setupAudioSource({int initialIndex = 0, Duration initialPosition = Duration.zero}) async {
-    if (_visibleSongs.isEmpty) return;
+    if (_visibleSongs.isEmpty) {
+      await _audioPlayer.stop();
+      _playlist = null;
+      _currentIndex = null;
+      return;
+    }
 
     _playlist = ConcatenatingAudioSource(
       children: songs.map((song) {
@@ -427,11 +432,57 @@ class AudioProvider with ChangeNotifier {
       _hiddenSongIds.add(song.id);
       await _saveHiddenSongs();
       
-      _visibleSongs.remove(song);
-      _needsPlaylistRebuild = true;
-      
-      notifyListeners();
+      _visibleSongs.removeWhere((s) => s.id == song.id);
+      await _handleSongRemoved(song);
     }
+  }
+
+  Future<void> _handleSongRemoved(SongModel song) async {
+    final isCurrent = currentSong?.id == song.id;
+    final wasPlaying = _isPlaying;
+    final savedPosition = _currentPosition;
+    final currentId = currentSong?.id;
+
+    if (isCurrent) {
+      if (_visibleSongs.isEmpty) {
+        await _audioPlayer.stop();
+        _playlist = null;
+        _currentIndex = null;
+        _currentPosition = Duration.zero;
+        _totalDuration = Duration.zero;
+        _isPlaying = false;
+      } else {
+        int nextIndex = _currentIndex ?? 0;
+        if (nextIndex >= _visibleSongs.length) {
+          nextIndex = 0;
+        }
+        await _audioPlayer.stop();
+        _currentIndex = nextIndex;
+        await _setupAudioSource(initialIndex: nextIndex, initialPosition: Duration.zero);
+        if (wasPlaying) {
+          try {
+            final session = await AudioSession.instance;
+            await session.setActive(true);
+            await _audioPlayer.play();
+          } catch (e) {
+            print("Error playing next song after deletion: $e");
+          }
+        }
+      }
+    } else if (currentId != null) {
+      final newIndex = _visibleSongs.indexWhere((s) => s.id == currentId);
+      if (newIndex != -1) {
+        _currentIndex = newIndex;
+        await _setupAudioSource(initialIndex: newIndex, initialPosition: savedPosition);
+        if (wasPlaying) {
+          await _audioPlayer.play();
+        }
+      }
+    } else {
+      _needsPlaylistRebuild = true;
+    }
+
+    notifyListeners();
   }
 
   Future<bool> deletePhysicalSong(SongModel song) async {
@@ -449,8 +500,7 @@ class AudioProvider with ChangeNotifier {
       _visibleSongs.removeWhere((s) => s.id == song.id);
       _hiddenSongIds.remove(song.id);
       await _saveHiddenSongs();
-      _needsPlaylistRebuild = true;
-      notifyListeners();
+      await _handleSongRemoved(song);
       return true;
     } catch (e) {
       print("Error deleting physical song: $e");

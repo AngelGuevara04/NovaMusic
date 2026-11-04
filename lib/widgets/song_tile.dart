@@ -43,8 +43,11 @@ class SongTile extends StatelessWidget {
             ScaffoldMessenger.of(context).hideCurrentSnackBar();
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('${song.title} eliminada del dispositivo'),
-                backgroundColor: Colors.black87,
+                content: Text(
+                  '${song.title} eliminada del dispositivo',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+                backgroundColor: const Color(0xFF262626),
                 behavior: SnackBarBehavior.floating,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
@@ -64,31 +67,47 @@ class SongTile extends StatelessWidget {
               children: [
                 Icon(Icons.delete_outline, color: Colors.redAccent),
                 SizedBox(width: 8),
-                Expanded(child: Text('¿Eliminar canción?', style: TextStyle(color: Colors.white, fontSize: 18))),
+                Expanded(
+                  child: Text(
+                    '¿Eliminar canción?',
+                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
               ],
             ),
             content: Text(
               '¿Deseas solo quitar "${song.title}" de la lista o borrar el archivo permanentemente de tu dispositivo?',
-              style: const TextStyle(color: Colors.white70, fontSize: 14),
+              style: const TextStyle(color: Color(0xFFEEEEEE), fontSize: 15, height: 1.3),
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, 'cancel'),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w600),
+                ),
               ),
               OutlinedButton(
                 style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.deepPurpleAccent),
+                  side: const BorderSide(color: Color(0xFFB388FF)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 ),
                 onPressed: () => Navigator.pop(ctx, 'hide'),
-                child: const Text('Solo de la lista', style: TextStyle(color: Colors.deepPurpleAccent)),
+                child: const Text(
+                  'Solo de la lista',
+                  style: TextStyle(color: Color(0xFFD1C4E9), fontSize: 14, fontWeight: FontWeight.w600),
+                ),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.redAccent,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 ),
                 onPressed: () => Navigator.pop(ctx, 'delete'),
-                child: const Text('Borrar del celular', style: TextStyle(color: Colors.white)),
+                child: const Text(
+                  'Borrar del celular',
+                  style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                ),
               ),
             ],
           ),
@@ -100,13 +119,16 @@ class SongTile extends StatelessWidget {
             ScaffoldMessenger.of(context).hideCurrentSnackBar();
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('${song.title} quitada de la lista'),
-                backgroundColor: Colors.black87,
+                content: Text(
+                  '${song.title} quitada de la lista',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+                backgroundColor: const Color(0xFF262626),
                 behavior: SnackBarBehavior.floating,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 action: SnackBarAction(
                   label: 'Deshacer',
-                  textColor: Theme.of(context).primaryColor,
+                  textColor: const Color(0xFFB388FF),
                   onPressed: () => audioProvider.unhideSong(song),
                 ),
               ),
@@ -119,8 +141,11 @@ class SongTile extends StatelessWidget {
             ScaffoldMessenger.of(context).hideCurrentSnackBar();
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('${song.title} borrada del celular'),
-                backgroundColor: Colors.black87,
+                content: Text(
+                  '${song.title} borrada del celular',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+                backgroundColor: const Color(0xFF262626),
                 behavior: SnackBarBehavior.floating,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
@@ -135,9 +160,9 @@ class SongTile extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
-          color: isPlaying ? Theme.of(context).primaryColor.withOpacity(0.1) : Colors.transparent,
+          color: isPlaying ? Theme.of(context).primaryColor.withOpacity(0.15) : Colors.transparent,
           borderRadius: BorderRadius.circular(12),
-          border: isPlaying ? Border.all(color: Theme.of(context).primaryColor.withOpacity(0.5)) : null,
+          border: isPlaying ? Border.all(color: Theme.of(context).primaryColor.withOpacity(0.6)) : null,
         ),
         child: ListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -145,7 +170,7 @@ class SongTile extends StatelessWidget {
             width: 50,
             height: 50,
             decoration: BoxDecoration(
-              color: Colors.deepPurpleAccent.withOpacity(0.2),
+              color: Colors.deepPurpleAccent.withOpacity(0.25),
               borderRadius: BorderRadius.circular(8),
             ),
             child: const Icon(
@@ -158,8 +183,9 @@ class SongTile extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontWeight: isPlaying ? FontWeight.bold : FontWeight.w500,
-              color: isPlaying ? Theme.of(context).primaryColor : Colors.white,
+              fontWeight: isPlaying ? FontWeight.bold : FontWeight.w600,
+              color: isPlaying ? const Color(0xFFB388FF) : Colors.white,
+              fontSize: 15,
             ),
           ),
           subtitle: Text(
@@ -167,12 +193,12 @@ class SongTile extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
-              color: Colors.white60,
-              fontSize: 12,
+              color: Color(0xFFCCCCCC),
+              fontSize: 13,
             ),
           ),
           trailing: isPlaying
-              ? Icon(Icons.bar_chart, color: Theme.of(context).primaryColor)
+              ? const Icon(Icons.bar_chart, color: Color(0xFFB388FF))
               : null,
           onTap: onTap,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),

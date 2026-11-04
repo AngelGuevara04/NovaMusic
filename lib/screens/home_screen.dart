@@ -87,7 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   hintText: 'Buscar canción...',
-                  hintStyle: TextStyle(color: Colors.white54),
+                  hintStyle: const TextStyle(color: Colors.white70),
                   border: InputBorder.none,
                 ),
                 onChanged: (value) {
@@ -227,7 +227,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 16),
                   const Text(
                     '¿No encuentras lo que buscas?',
-                    style: TextStyle(color: Colors.white54, fontSize: 18),
+                    style: TextStyle(color: Color(0xFFE0E0E0), fontSize: 18, fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 16),
                   ElevatedButton.icon(
@@ -261,15 +261,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     Text(
                       '${audioProvider.songs.length} Canciones',
                       style: const TextStyle(
-                        color: Colors.white54,
+                        color: Color(0xFFCCCCCC),
                         fontSize: 14,
-                        fontWeight: FontWeight.w500,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     IconButton(
                       icon: Icon(
                         audioProvider.isShuffle ? Icons.shuffle_on_outlined : Icons.shuffle,
-                        color: audioProvider.isShuffle ? Theme.of(context).primaryColor : Colors.white54,
+                        color: audioProvider.isShuffle ? Theme.of(context).primaryColor : Colors.white70,
                       ),
                       onPressed: () {
                         audioProvider.toggleShuffle();
@@ -398,8 +398,9 @@ class MiniPlayer extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          color: Colors.white54,
-                          fontSize: 12,
+                          color: Color(0xFFCCCCCC),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],

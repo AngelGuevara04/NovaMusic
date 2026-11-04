@@ -47,7 +47,7 @@ class HiddenSongsScreen extends StatelessWidget {
                   SizedBox(height: 16),
                   Text(
                     'No hay canciones ocultas',
-                    style: TextStyle(color: Colors.white54, fontSize: 18),
+                    style: TextStyle(color: Color(0xFFE0E0E0), fontSize: 18, fontWeight: FontWeight.w600),
                   ),
                 ],
               ),
@@ -79,7 +79,7 @@ class HiddenSongsScreen extends StatelessWidget {
                   song.artist ?? "Artista desconocido",
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 13),
                 ),
                 trailing: IconButton(
                   icon: const Icon(Icons.restore, color: Colors.deepPurpleAccent),

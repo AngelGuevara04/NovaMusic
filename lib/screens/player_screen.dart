@@ -152,7 +152,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Colors.white54,
+                    color: Color(0xFFDDDDDD),
+                    fontWeight: FontWeight.w500,
                     fontSize: 16,
                   ),
                 ),
@@ -168,7 +169,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       progressBarColor: Theme.of(context).primaryColor,
                       baseBarColor: Colors.white24,
                       thumbColor: Theme.of(context).primaryColor,
-                      timeLabelTextStyle: const TextStyle(color: Colors.white54, fontSize: 12),
+                      timeLabelTextStyle: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
                       onSeek: (duration) {
                         audioProvider.seekTo(duration);
                       },
@@ -187,7 +188,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         IconButton(
                           icon: Icon(
                             Icons.shuffle,
-                            color: audioProvider.isShuffle ? Theme.of(context).primaryColor : Colors.white54,
+                            color: audioProvider.isShuffle ? Theme.of(context).primaryColor : Colors.white70,
                           ),
                           onPressed: () => audioProvider.toggleShuffle(),
                         ),
@@ -225,7 +226,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         IconButton(
                           icon: Icon(
                             audioProvider.loopMode == LoopMode.one ? Icons.repeat_one : Icons.repeat,
-                            color: audioProvider.loopMode != LoopMode.off ? Theme.of(context).primaryColor : Colors.white54,
+                            color: audioProvider.loopMode != LoopMode.off ? Theme.of(context).primaryColor : Colors.white70,
                           ),
                           onPressed: () => audioProvider.toggleRepeat(),
                         ),
@@ -249,7 +250,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         children: [
           CircularProgressIndicator(),
           SizedBox(height: 16),
-          Text('Buscando letra...', style: TextStyle(color: Colors.white54)),
+          Text('Buscando letra...', style: TextStyle(color: Colors.white70)),
         ],
       );
     }
@@ -261,7 +262,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           children: [
             const Icon(Icons.lyrics_outlined, size: 60, color: Colors.white24),
             const SizedBox(height: 12),
-            const Text('No se encontró letra para esta canción', style: TextStyle(color: Colors.white54)),
+            const Text('No se encontró letra para esta canción', style: TextStyle(color: Colors.white70)),
             const SizedBox(height: 12),
             TextButton(
               onPressed: () {
@@ -312,7 +313,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   style: TextStyle(
                     fontSize: isActive ? 20 : 16,
                     fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-                    color: isActive ? Theme.of(context).primaryColor : Colors.white38,
+                    color: isActive ? Colors.white : const Color(0xFF9E9E9E),
                   ),
                 ),
               );

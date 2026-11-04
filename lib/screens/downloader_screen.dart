@@ -134,7 +134,7 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                   onSubmitted: (_) => _performSearch(),
                   decoration: InputDecoration(
                     hintText: 'Buscar canción, artista o link...',
-                    hintStyle: const TextStyle(color: Colors.white54),
+                    hintStyle: const TextStyle(color: Colors.white70),
                     filled: true,
                     fillColor: const Color(0xFF2C2C2C),
                     border: OutlineInputBorder(
@@ -143,7 +143,7 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                     ),
                     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     suffixIcon: IconButton(
-                      icon: const Icon(Icons.search, color: Colors.white54),
+                      icon: const Icon(Icons.search, color: Colors.white70),
                       onPressed: _performSearch,
                     ),
                   ),
@@ -284,7 +284,7 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                     ? const Center(child: CircularProgressIndicator())
                     : downloader.searchResults.isEmpty
                         ? const Center(
-                            child: Text('Busca tu música favorita para descargarla.', style: TextStyle(color: Colors.white54)),
+                            child: Text('Busca tu música favorita para descargarla.', style: TextStyle(color: Color(0xFFCCCCCC), fontSize: 15)),
                           )
                         : ListView.builder(
                             itemCount: downloader.searchResults.length,
@@ -301,7 +301,7 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                                   ),
                                 ),
                                 title: Text(video.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
-                                subtitle: Text(video.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54)),
+                                subtitle: Text(video.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 13)),
                                 trailing: IconButton(
                                   icon: const Icon(Icons.download, color: Colors.deepPurpleAccent),
                                   onPressed: () {

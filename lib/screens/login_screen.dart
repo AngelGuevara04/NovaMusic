@@ -98,13 +98,15 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 8),
               const Text(
                 'Ingresa un nombre de usuario único',
-                style: TextStyle(color: Colors.white54),
+                style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 14),
               ),
               const SizedBox(height: 32),
               TextField(
                 controller: _userController,
+                style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
                   hintText: 'Ej. angel123',
+                  hintStyle: const TextStyle(color: Colors.white70),
                   filled: true,
                   fillColor: const Color(0xFF2C2C2C),
                   border: OutlineInputBorder(
