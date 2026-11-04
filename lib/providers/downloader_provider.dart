@@ -9,6 +9,7 @@ import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import 'package:media_scanner/media_scanner.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:just_audio/just_audio.dart';
 
 class DownloadTask {
   String id = UniqueKey().toString();
@@ -30,14 +31,18 @@ class DownloaderProvider extends ChangeNotifier {
   List<Video> _searchResults = [];
   bool _isSearching = false;
 
+  final AudioPlayer _previewPlayer = AudioPlayer();
   String? _previewingUrl;
+  String? _previewTitle;
   bool _isDownloadingPreview = false;
+  bool _isPreviewPlaying = false;
 
   List<Video> get searchResults => _searchResults;
   bool get isSearching => _isSearching;
   String? get previewingUrl => _previewingUrl;
+  String? get previewTitle => _previewTitle;
   bool get isDownloadingPreview => _isDownloadingPreview;
-  bool get isPreviewPlaying => false;
+  bool get isPreviewPlaying => _isPreviewPlaying;
 
   String? _currentRecommendationArtist;
   String? get currentRecommendationArtist => _currentRecommendationArtist;
@@ -50,6 +55,19 @@ class DownloaderProvider extends ChangeNotifier {
 
   DownloaderProvider() {
     _initNotifications();
+    _previewPlayer.playerStateStream.listen((state) {
+      final isPlaying = state.playing && state.processingState != ProcessingState.completed;
+      if (_isPreviewPlaying != isPlaying) {
+        _isPreviewPlaying = isPlaying;
+        notifyListeners();
+      }
+      if (state.processingState == ProcessingState.completed) {
+        _previewingUrl = null;
+        _previewTitle = null;
+        _isPreviewPlaying = false;
+        notifyListeners();
+      }
+    });
   }
 
   Future<void> _initNotifications() async {
@@ -477,12 +495,61 @@ class DownloaderProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> stopPreview() async {}
-  Future<void> togglePreview(Video video) async {}
+  Future<void> togglePreview(Video video) async {
+    if (_previewingUrl == video.url) {
+      if (_previewPlayer.playing) {
+        await _previewPlayer.pause();
+      } else {
+        await _previewPlayer.play();
+      }
+      notifyListeners();
+      return;
+    }
+
+    await stopPreview();
+    _previewingUrl = video.url;
+    _previewTitle = video.title;
+    _isDownloadingPreview = true;
+    notifyListeners();
+
+    try {
+      final manifest = await _yt.videos.streamsClient.getManifest(video.url).timeout(const Duration(seconds: 15));
+      StreamInfo? streamInfo;
+      if (manifest.audioOnly.isNotEmpty) {
+        streamInfo = manifest.audioOnly.withHighestBitrate();
+      } else if (manifest.muxed.isNotEmpty) {
+        streamInfo = manifest.muxed.withHighestBitrate();
+      }
+
+      if (streamInfo == null) {
+        throw Exception("No se encontró stream de audio para vista previa");
+      }
+
+      await _previewPlayer.setUrl(streamInfo.url.toString());
+      _isDownloadingPreview = false;
+      await _previewPlayer.play();
+      notifyListeners();
+    } catch (e) {
+      print("Error en vista previa: $e");
+      await stopPreview();
+    }
+  }
+
+  Future<void> stopPreview() async {
+    try {
+      await _previewPlayer.stop();
+    } catch (_) {}
+    _previewingUrl = null;
+    _previewTitle = null;
+    _isDownloadingPreview = false;
+    _isPreviewPlaying = false;
+    notifyListeners();
+  }
 
   @override
   void dispose() {
     _yt.close();
+    _previewPlayer.dispose();
     super.dispose();
   }
 }
