@@ -228,28 +228,57 @@ class DownloaderProvider extends ChangeNotifier {
   }
 
   Future<String> _getDownloadsDirectory() async {
-    if (Platform.isAndroid) {
-      if (!await Permission.manageExternalStorage.isGranted) {
-        await Permission.manageExternalStorage.request();
+    // 1. Intentar carpeta estándar Music
+    try {
+      final musicDirs = await getExternalStorageDirectories(type: StorageDirectory.music);
+      if (musicDirs != null && musicDirs.isNotEmpty) {
+        final targetDir = Directory('${musicDirs.first.path}/NovaMusic');
+        if (!await targetDir.exists()) {
+          await targetDir.create(recursive: true);
+        }
+        return targetDir.path;
       }
-    }
-    Directory? dir = await getExternalStorageDirectory();
-    String newPath = "";
-    List<String> paths = dir!.path.split("/");
-    for (int x = 1; x < paths.length; x++) {
-      String folder = paths[x];
-      if (folder != "Android") {
-        newPath += "/$folder";
-      } else {
-        break;
+    } catch (_) {}
+
+    // 2. Intentar carpeta pública /storage/emulated/0/Music/NovaMusic
+    try {
+      final targetDir = Directory('/storage/emulated/0/Music/NovaMusic');
+      if (!await targetDir.exists()) {
+        await targetDir.create(recursive: true);
       }
+      return targetDir.path;
+    } catch (_) {}
+
+    // 3. Intentar ruta externa derivada
+    try {
+      Directory? dir = await getExternalStorageDirectory();
+      if (dir != null) {
+        String newPath = "";
+        List<String> paths = dir.path.split("/");
+        for (int x = 1; x < paths.length; x++) {
+          String folder = paths[x];
+          if (folder != "Android") {
+            newPath += "/$folder";
+          } else {
+            break;
+          }
+        }
+        newPath = "$newPath/Music/NovaMusic";
+        Directory targetDir = Directory(newPath);
+        if (!await targetDir.exists()) {
+          await targetDir.create(recursive: true);
+        }
+        return targetDir.path;
+      }
+    } catch (_) {}
+
+    // 4. Fallback seguro a documentos de la app
+    final appDir = await getApplicationDocumentsDirectory();
+    final fallbackDir = Directory('${appDir.path}/NovaMusic');
+    if (!await fallbackDir.exists()) {
+      await fallbackDir.create(recursive: true);
     }
-    newPath = "$newPath/Music/NovaMusic";
-    Directory targetDir = Directory(newPath);
-    if (!await targetDir.exists()) {
-      await targetDir.create(recursive: true);
-    }
-    return newPath;
+    return fallbackDir.path;
   }
 
   Future<void> _downloadNormalMethod(DownloadTask task, Function() onSuccess) async {

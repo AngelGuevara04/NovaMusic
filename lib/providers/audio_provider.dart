@@ -285,27 +285,50 @@ class AudioProvider with ChangeNotifier {
       }
     }
 
+    // Check if the visible songs changed to prevent unnecessary audio restarts
+    final oldSongIds = _visibleSongs.map((s) => s.id).toList();
     _allSongs = uniqueSongs.values.toList();
     _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
-    
     _applySort();
+    final newSongIds = _visibleSongs.map((s) => s.id).toList();
+    final bool songsChanged = !listEquals(oldSongIds, newSongIds);
 
-    // Save the ID of the currently playing song before updating the playlist
     final currentSongId = currentSong?.id;
     final wasPlaying = _isPlaying;
     final savedPosition = _currentPosition;
 
-    if (_playlist == null) {
-      await _setupAudioSource();
-    } else {
-      final newIndex = currentSongId != null ? songs.indexWhere((s) => s.id == currentSongId) : 0;
-      await _setupAudioSource(
-        initialIndex: newIndex != -1 ? newIndex : 0,
-        initialPosition: savedPosition,
-      );
-      if (wasPlaying && currentSongId != null) {
-        _audioPlayer.play();
+    if (!songsChanged && _playlist != null) {
+      // Si la lista no ha cambiado, no tocar el reproductor
+      notifyListeners();
+      return;
+    }
+
+    if (currentSongId != null) {
+      final newIndex = songs.indexWhere((s) => s.id == currentSongId);
+      if (newIndex != -1) {
+        _currentIndex = newIndex;
+        await _setupAudioSource(
+          initialIndex: newIndex,
+          initialPosition: savedPosition,
+        );
+        if (wasPlaying) {
+          try {
+            await _audioPlayer.play();
+          } catch (_) {}
+        }
+      } else {
+        // La canción que sonaba fue eliminada
+        await _audioPlayer.stop();
+        _currentIndex = null;
+        _playlist = null;
+        _needsPlaylistRebuild = true;
       }
+    } else {
+      // Ninguna canción estaba seleccionada ni reproduciéndose.
+      // NO poner la primera canción ni seleccionarla automáticamente.
+      _currentIndex = null;
+      _playlist = null;
+      _needsPlaylistRebuild = true;
     }
 
     notifyListeners();
@@ -318,6 +341,8 @@ class AudioProvider with ChangeNotifier {
       _currentIndex = null;
       return;
     }
+
+    final validIndex = (initialIndex >= 0 && initialIndex < _visibleSongs.length) ? initialIndex : 0;
 
     _playlist = ConcatenatingAudioSource(
       children: songs.map((song) {
@@ -345,10 +370,10 @@ class AudioProvider with ChangeNotifier {
     try {
       await _audioPlayer.setAudioSource(
         _playlist!,
-        initialIndex: initialIndex,
+        initialIndex: validIndex,
         initialPosition: initialPosition,
       );
-      _currentIndex = initialIndex;
+      _currentIndex = validIndex;
       _needsPlaylistRebuild = false;
     } catch (e) {
       print("Error setting audio source: $e");
@@ -356,15 +381,22 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> playSong(int index) async {
-    if (_needsPlaylistRebuild) {
-      await _setupAudioSource();
+    if (index < 0 || index >= _visibleSongs.length) return;
+
+    if (_playlist == null || _needsPlaylistRebuild) {
+      await _setupAudioSource(initialIndex: index);
+    } else if (_currentIndex != index) {
+      try {
+        await _audioPlayer.seek(Duration.zero, index: index);
+      } catch (e) {
+        await _setupAudioSource(initialIndex: index);
+      }
     }
     
     _currentIndex = index;
     try {
       final session = await AudioSession.instance;
       await session.setActive(true);
-      await _audioPlayer.seek(Duration.zero, index: index);
       await _audioPlayer.play();
     } catch (e) {
       print("Error playing song: $e");
