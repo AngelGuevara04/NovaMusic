@@ -327,7 +327,7 @@ class AudioProvider with ChangeNotifier {
             album: albumName,
             title: songTitle,
             artist: artistName,
-            artUri: Uri.parse('content://media/external/audio/media/${song.id}/albumart'),
+            artUri: null,
           ),
         );
       }).toList(),

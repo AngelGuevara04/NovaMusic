@@ -90,7 +90,7 @@ class MainActivity : AudioServiceActivity() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channelId = "com.ajgm1.music.channel.audio.v4"
+            val channelId = "com.ajgm1.music.channel.audio.v5"
             val channelName = "Reproductor Nova Music"
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -98,6 +98,7 @@ class MainActivity : AudioServiceActivity() {
                 notificationManager.deleteNotificationChannel("com.ajgm1.music.channel.audio")
                 notificationManager.deleteNotificationChannel("com.ajgm1.music.channel.audio.v2")
                 notificationManager.deleteNotificationChannel("com.ajgm1.music.channel.audio.v3")
+                notificationManager.deleteNotificationChannel("com.ajgm1.music.channel.audio.v4")
             } catch (e: Exception) {
                 // Ignore
             }
