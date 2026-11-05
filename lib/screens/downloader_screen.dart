@@ -35,12 +35,7 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
     });
   }
 
-  @override
-  void deactivate() {
-    // Al salir de la pantalla de descargas, detener cualquier vista previa que esté sonando
-    Provider.of<DownloaderProvider>(context, listen: false).stopPreview();
-    super.deactivate();
-  }
+
 
   List<String> _getLocalArtists(AudioProvider audioProvider) {
     if (audioProvider.favoriteSongs.isNotEmpty) {
@@ -139,109 +134,6 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
               ),
             ),
           ),
-          bottomNavigationBar: downloader.previewingUrl != null
-              ? Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E142B),
-                    border: Border(
-                      top: BorderSide(
-                        color: Colors.deepPurpleAccent.withValues(alpha: 0.4),
-                        width: 1,
-                      ),
-                    ),
-                  ),
-                  child: SafeArea(
-                    child: Row(
-                      children: [
-                        const Icon(Icons.headphones, color: Colors.deepPurpleAccent, size: 22),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: Colors.deepPurpleAccent.withValues(alpha: 0.25),
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: const Text(
-                                      'ESCUCHANDO VISTA PREVIA',
-                                      style: TextStyle(
-                                        color: Colors.deepPurpleAccent,
-                                        fontSize: 9,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 1.0,
-                                      ),
-                                    ),
-                                  ),
-                                  if (downloader.isDownloadingPreview)
-                                    const Padding(
-                                      padding: EdgeInsets.only(left: 8),
-                                      child: Text(
-                                        'Conectando audio...',
-                                        style: TextStyle(color: Color(0xFFCCCCCC), fontSize: 11),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                downloader.previewTitle ?? 'Reproduciendo audio...',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (downloader.isDownloadingPreview)
-                          const Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 10),
-                            child: SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurpleAccent),
-                            ),
-                          )
-                        else
-                          IconButton(
-                            icon: Icon(
-                              downloader.isPreviewPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
-                              color: Colors.deepPurpleAccent,
-                              size: 32,
-                            ),
-                            onPressed: () {
-                              final matches = downloader.searchResults.where(
-                                (v) => v.url == downloader.previewingUrl,
-                              );
-                              if (matches.isNotEmpty) {
-                                downloader.togglePreview(matches.first);
-                              } else if (downloader.isPreviewPlaying) {
-                                downloader.stopPreview();
-                              }
-                            },
-                          ),
-                        IconButton(
-                          icon: const Icon(Icons.close, color: Color(0xFFCCCCCC)),
-                          tooltip: 'Cerrar vista previa',
-                          onPressed: () {
-                            downloader.stopPreview();
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              : null,
           body: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -411,52 +303,31 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                             itemCount: downloader.searchResults.length,
                             itemBuilder: (context, index) {
                               final video = downloader.searchResults[index];
-                              final isThisPreviewing = downloader.previewingUrl == video.url;
-                              final isBuffering = isThisPreviewing && downloader.isDownloadingPreview;
-                              final isPlaying = isThisPreviewing && downloader.isPreviewPlaying;
 
                               return ListTile(
-                                leading: Stack(
-                                  alignment: Alignment.center,
-                                  children: [
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: Image.network(
-                                        video.thumbnails.lowResUrl,
-                                        width: 55,
-                                        height: 55,
-                                        fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) => Container(
-                                          width: 55,
-                                          height: 55,
-                                          color: const Color(0xFF2C2C2C),
-                                          child: const Icon(Icons.music_note, color: Colors.white54),
-                                        ),
-                                      ),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                                leading: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.network(
+                                    video.thumbnails.lowResUrl,
+                                    width: 55,
+                                    height: 55,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => Container(
+                                      width: 55,
+                                      height: 55,
+                                      color: const Color(0xFF2C2C2C),
+                                      child: const Icon(Icons.music_note, color: Colors.white54),
                                     ),
-                                    if (isThisPreviewing)
-                                      Container(
-                                        width: 55,
-                                        height: 55,
-                                        decoration: BoxDecoration(
-                                          color: Colors.black54,
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                        child: Icon(
-                                          isPlaying ? Icons.equalizer : Icons.pause,
-                                          color: Colors.deepPurpleAccent,
-                                          size: 26,
-                                        ),
-                                      ),
-                                  ],
+                                  ),
                                 ),
                                 title: Text(
                                   video.title,
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: isThisPreviewing ? Colors.deepPurpleAccent : Colors.white,
-                                    fontWeight: isThisPreviewing ? FontWeight.bold : FontWeight.normal,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
                                     fontSize: 14,
                                   ),
                                 ),
@@ -466,48 +337,18 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 12),
                                 ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    // Botón para escuchar Vista Previa
-                                    IconButton(
-                                      tooltip: isPlaying ? 'Pausar vista previa' : 'Escuchar vista previa',
-                                      icon: isBuffering
-                                          ? const SizedBox(
-                                              width: 22,
-                                              height: 22,
-                                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurpleAccent),
-                                            )
-                                          : Icon(
-                                              isPlaying ? Icons.pause_circle_filled : Icons.play_circle_outline,
-                                              color: isPlaying
-                                                  ? Colors.deepPurpleAccent
-                                                  : (isThisPreviewing ? Colors.deepPurpleAccent : Colors.white70),
-                                              size: 32,
-                                            ),
-                                      onPressed: () {
-                                        // Pausar reproductor local si está sonando música
-                                        if (audioProvider.isPlaying) {
-                                          audioProvider.playPause();
-                                        }
-                                        downloader.togglePreview(video);
-                                      },
-                                    ),
-                                    // Botón para Descargar
-                                    IconButton(
-                                      tooltip: 'Descargar MP3',
-                                      icon: const Icon(Icons.download_rounded, color: Colors.deepPurpleAccent, size: 28),
-                                      onPressed: () {
-                                        _startDownload(video.url);
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(
-                                            content: Text('Descarga iniciada'),
-                                            duration: Duration(seconds: 2),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ],
+                                trailing: IconButton(
+                                  tooltip: 'Descargar canción',
+                                  icon: const Icon(Icons.download_rounded, color: Colors.deepPurpleAccent, size: 28),
+                                  onPressed: () {
+                                    _startDownload(video.url);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Descarga iniciada'),
+                                        duration: Duration(seconds: 2),
+                                      ),
+                                    );
+                                  },
                                 ),
                               );
                             },

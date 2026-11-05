@@ -9,10 +9,8 @@ import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import 'package:media_scanner/media_scanner.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../services/youtube_audio_source.dart';
 
 class DownloadTask {
   String id = UniqueKey().toString();
@@ -34,18 +32,8 @@ class DownloaderProvider extends ChangeNotifier {
   List<Video> _searchResults = [];
   bool _isSearching = false;
 
-  final AudioPlayer _previewPlayer = AudioPlayer();
-  String? _previewingUrl;
-  String? _previewTitle;
-  bool _isDownloadingPreview = false;
-  bool _isPreviewPlaying = false;
-
   List<Video> get searchResults => _searchResults;
   bool get isSearching => _isSearching;
-  String? get previewingUrl => _previewingUrl;
-  String? get previewTitle => _previewTitle;
-  bool get isDownloadingPreview => _isDownloadingPreview;
-  bool get isPreviewPlaying => _isPreviewPlaying;
 
   String? _currentRecommendationArtist;
   String? get currentRecommendationArtist => _currentRecommendationArtist;
@@ -58,19 +46,6 @@ class DownloaderProvider extends ChangeNotifier {
 
   DownloaderProvider() {
     _initNotifications();
-    _previewPlayer.playerStateStream.listen((state) {
-      final isPlaying = state.playing && state.processingState != ProcessingState.completed;
-      if (_isPreviewPlaying != isPlaying) {
-        _isPreviewPlaying = isPlaying;
-        notifyListeners();
-      }
-      if (state.processingState == ProcessingState.completed) {
-        _previewingUrl = null;
-        _previewTitle = null;
-        _isPreviewPlaying = false;
-        notifyListeners();
-      }
-    });
   }
 
   Future<void> _initNotifications() async {
@@ -533,71 +508,9 @@ class DownloaderProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> togglePreview(Video video) async {
-    if (_previewingUrl == video.url) {
-      if (_previewPlayer.playing) {
-        await _previewPlayer.pause();
-      } else {
-        await _previewPlayer.play();
-      }
-      notifyListeners();
-      return;
-    }
-
-    await stopPreview();
-    _previewingUrl = video.url;
-    _previewTitle = video.title;
-    _isDownloadingPreview = true;
-    notifyListeners();
-
-    try {
-      final manifest = await _yt.videos.streamsClient.getManifest(video.id).timeout(const Duration(seconds: 12));
-      StreamInfo? streamInfo;
-      final mp4Audios = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
-      if (mp4Audios.isNotEmpty) {
-        streamInfo = mp4Audios.withHighestBitrate();
-      } else if (manifest.audioOnly.isNotEmpty) {
-        streamInfo = manifest.audioOnly.withHighestBitrate();
-      } else if (manifest.muxed.isNotEmpty) {
-        streamInfo = manifest.muxed.withHighestBitrate();
-      }
-
-      if (streamInfo == null) {
-        throw Exception("No se encontró stream de audio para vista previa");
-      }
-
-      final contentType = streamInfo.container.name.toLowerCase() == 'mp4' ? 'audio/mp4' : 'audio/webm';
-      await _previewPlayer.setAudioSource(
-        YouTubeAudioSource(
-          uri: streamInfo.url,
-          totalBytes: streamInfo.size.totalBytes,
-          contentType: contentType,
-        ),
-      ).timeout(const Duration(seconds: 12));
-      _isDownloadingPreview = false;
-      await _previewPlayer.play();
-      notifyListeners();
-    } catch (e) {
-      print("Error en vista previa: $e");
-      await stopPreview();
-    }
-  }
-
-  Future<void> stopPreview() async {
-    try {
-      await _previewPlayer.stop();
-    } catch (_) {}
-    _previewingUrl = null;
-    _previewTitle = null;
-    _isDownloadingPreview = false;
-    _isPreviewPlaying = false;
-    notifyListeners();
-  }
-
   @override
   void dispose() {
     _yt.close();
-    _previewPlayer.dispose();
     super.dispose();
   }
 }
