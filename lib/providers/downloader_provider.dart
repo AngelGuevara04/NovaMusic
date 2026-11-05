@@ -485,11 +485,26 @@ class DownloaderProvider extends ChangeNotifier {
           final m = reg.firstMatch(task.url);
           if (m != null) ytId = m.group(1) ?? '';
 
-          final exists = existing.any((item) => (item is Map && (item['title'] == task.title || (ytId.isNotEmpty && item['youtube_id'] == ytId))));
+          final cleanTitle = safeFileName
+              .replaceAll(RegExp(r'\.(mp3|m4a|wav)$', caseSensitive: false), '')
+              .replaceAll('_', ' ')
+              .trim();
+
+          final normNew = cleanTitle.toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
+
+          final exists = existing.any((item) {
+            if (item is! Map) return false;
+            final itemTitle = (item['title'] ?? '').toString();
+            final normExisting = itemTitle.toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
+            if (normExisting == normNew) return true;
+            if (ytId.isNotEmpty && item['youtube_id'] == ytId) return true;
+            return false;
+          });
+
           if (!exists) {
             existing.add({
               'id': DateTime.now().millisecondsSinceEpoch,
-              'title': task.title,
+              'title': cleanTitle,
               'artist': 'Descargado',
               'youtube_id': ytId,
               'url': task.url,

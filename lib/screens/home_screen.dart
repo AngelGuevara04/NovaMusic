@@ -1,3 +1,4 @@
+import 'cloud_backup_screen.dart';
 import '../widgets/suggestion_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -182,7 +183,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.cloud_outlined,
                       color: Colors.lightBlueAccent,
                       title: 'En Nube',
-                      value: '${provider.cloudOnlySongsCount}',
+                      value: '${provider.cloudLibrarySongs.length}',
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -497,6 +498,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     _showSortDialog(context, provider);
                   } else if (result == 'suggestions') {
                     showSuggestionDialog(context);
+                  } else if (result == 'cloud_backup') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const CloudBackupScreen()),
+                    );
                   } else if (result == 'profile') {
                     _showUserProfileDialog(context, provider);
                   } else if (result == 'restore_hidden') {
@@ -573,6 +579,16 @@ class _HomeScreenState extends State<HomeScreen> {
                         Icon(Icons.lightbulb_outline, color: Colors.amberAccent, size: 20),
                         SizedBox(width: 12),
                         Text('Buzón de sugerencias', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'cloud_backup',
+                    child: Row(
+                      children: [
+                        Icon(Icons.cloud_done_outlined, color: Colors.cyanAccent, size: 20),
+                        SizedBox(width: 12),
+                        Text('Respaldo en la Nube', style: TextStyle(color: Colors.white, fontSize: 14)),
                       ],
                     ),
                   ),

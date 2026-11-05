@@ -441,29 +441,8 @@ class AudioProvider with ChangeNotifier {
       ignoreCase: true,
     );
 
-    final uniqueSongs = <String, SongModel>{};
-    for (var song in fetchedSongs) {
-      if (song.isMusic == true || song.isPodcast == false) {
-        final title = song.title.toLowerCase().trim();
-        final size = song.size ?? 0;
-        final key = '${title}_$size';
-        
-        if (!uniqueSongs.containsKey(key)) {
-          // Asegurar que dateAdded tenga valor para ordenamiento por fecha
-          if (song.dateAdded == null || song.dateAdded == 0) {
-            try {
-              final f = File(song.data);
-              if (f.existsSync()) {
-                song.getMap['date_added'] = f.lastModifiedSync().millisecondsSinceEpoch ~/ 1000;
-              }
-            } catch (_) {}
-          }
-          uniqueSongs[key] = song;
-        }
-      }
-    }
-
-    // Escaneo directo de carpetas de descarga de NovaMusic (para que las canciones aparezcan al instante sin esperar a Android MediaStore)
+    // 2. Obtener canciones de carpetas locales de NovaMusic
+    final List<File> directFiles = [];
     final candidateDirs = <String>[
       '/storage/emulated/0/Music/NovaMusic',
       '/storage/emulated/0/Download/NovaMusic',
@@ -487,128 +466,133 @@ class AudioProvider with ChangeNotifier {
         if (d.existsSync()) {
           final files = d.listSync().whereType<File>();
           for (var file in files) {
-            final lowerPath = file.path.toLowerCase();
-            if (lowerPath.endsWith('.mp3') || lowerPath.endsWith('.m4a') || lowerPath.endsWith('.wav')) {
-              final fileName = file.uri.pathSegments.last;
-              final cleanTitle = fileName
-                  .replaceAll(RegExp(r'\.(mp3|m4a|wav)$', caseSensitive: false), '')
-                  .trim();
-              final stat = file.statSync();
-              final key = '${cleanTitle.toLowerCase()}_${stat.size}';
-
-              if (!uniqueSongs.containsKey(key)) {
-                final dateSec = stat.modified.millisecondsSinceEpoch ~/ 1000;
-                final song = SongModel({
-                  '_id': file.path.hashCode.abs() % 2147483647,
-                  'title': cleanTitle,
-                  'artist': 'NovaMusic',
-                  '_data': file.path,
-                  '_uri': file.uri.toString(),
-                  '_display_name': fileName,
-                  '_display_name_wo_ext': cleanTitle,
-                  '_size': stat.size,
-                  'file_extension': 'mp3',
-                  'date_added': dateSec,
-                  'is_music': true,
-                  'is_podcast': false,
-                });
-                uniqueSongs[key] = song;
-              }
+            final lower = file.path.toLowerCase();
+            if (lower.endsWith('.mp3') || lower.endsWith('.m4a') || lower.endsWith('.wav')) {
+              directFiles.add(file);
             }
           }
         }
       } catch (_) {}
     }
 
-    // Si el usuario tiene sesión iniciada, sincronizar su biblioteca personalizada
-    if (!isGuest) {
-      if (_cloudLibrarySongs.isEmpty && uniqueSongs.isNotEmpty) {
-        _cloudLibrarySongs = uniqueSongs.values.map((s) => {
-          'id': s.id,
-          'title': s.title,
-          'artist': s.artist ?? 'Artista desconocido',
-          'youtube_id': '',
-          'duration': s.duration ?? 0,
-          'added_at': DateTime.now().toIso8601String(),
-        }).toList();
-        await syncPreferencesToCloud();
-        _allSongs = uniqueSongs.values.toList();
-      } else {
-        // Construir la biblioteca con las canciones de la nube y locales
-        final List<SongModel> userSongs = [];
-        for (var cloudItem in _cloudLibrarySongs) {
-          final cTitle = (cloudItem['title'] ?? '').toString().toLowerCase().trim();
-          final cYtId = cloudItem['youtube_id']?.toString() ?? '';
-          final cParsed = DateTime.tryParse(cloudItem['added_at'] ?? '');
-          final cDate = cParsed != null ? cParsed.millisecondsSinceEpoch ~/ 1000 : 0;
-          
-          SongModel? matchedLocal;
-          for (var local in uniqueSongs.values) {
-            final lTitle = local.title.toLowerCase().trim();
-            final lName = local.displayName.toLowerCase().trim();
-            if (lTitle == cTitle || lName.contains(cTitle) || (cTitle.isNotEmpty && lTitle.contains(cTitle))) {
-              matchedLocal = local;
+    // 3. PIPELINE DE DEDUPLICACIÓN ESTRICTA (¡Cero duplicados, cero canciones fantasma!)
+    String normalizeForDedup(String raw) {
+      return raw
+          .toLowerCase()
+          .replaceAll(RegExp(r'\[.*?\]|\(.*?\)', caseSensitive: false), '')
+          .replaceAll(RegExp(r'feat\..*|ft\..*', caseSensitive: false), '')
+          .replaceAll(RegExp(r'official|video|audio|lyrics|en vivo|letra|remastered', caseSensitive: false), '')
+          .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
+          .replaceAll('á', 'a')
+          .replaceAll('é', 'e')
+          .replaceAll('í', 'i')
+          .replaceAll('ó', 'o')
+          .replaceAll('ú', 'u')
+          .replaceAll('ñ', 'n')
+          .trim();
+    }
+
+    final List<SongModel> verifiedSongs = [];
+    final Set<String> seenPaths = {};
+
+    void tryAddSong(SongModel song, {int? fallbackDate}) {
+      if (song.data.isEmpty) return;
+      final file = File(song.data);
+      if (!file.existsSync()) return; // Solo archivos reales que existen físicamente en este celular
+
+      final canonicalPath = song.data.toLowerCase().replaceAll('\\', '/');
+      if (seenPaths.contains(canonicalPath)) return; // Ya agregada por ruta exacta
+
+      final normTitle = normalizeForDedup(song.title);
+      if (normTitle.isEmpty) return;
+
+      // Comprobar si ya existe una canción con título similar o archivo duplicado
+      bool isDuplicate = false;
+      for (var existing in verifiedSongs) {
+        final existingNorm = normalizeForDedup(existing.title);
+        if (existingNorm == normTitle) {
+          isDuplicate = true;
+          break;
+        }
+        if (normTitle.length >= 6 && existingNorm.length >= 6) {
+          if (normTitle.contains(existingNorm) || existingNorm.contains(normTitle)) {
+            final durDiff = ((existing.duration ?? 0) - (song.duration ?? 0)).abs();
+            if (durDiff < 15000 || existing.size == song.size) {
+              isDuplicate = true;
               break;
             }
           }
-
-          if (matchedLocal != null && File(matchedLocal.data).existsSync()) {
-            matchedLocal.getMap['youtube_id'] = cYtId;
-            matchedLocal.getMap['is_cloud'] = false;
-            if (matchedLocal.dateAdded == null || matchedLocal.dateAdded == 0) {
-              matchedLocal.getMap['date_added'] = cDate > 0 ? cDate : (DateTime.now().millisecondsSinceEpoch ~/ 1000);
-            }
-            userSongs.add(matchedLocal);
-          } else {
-            // Canción en la nube
-            userSongs.add(SongModel({
-              '_id': cloudItem['id'] ?? (cTitle.hashCode.abs() % 2147483647),
-              'title': cloudItem['title'] ?? 'Canción sin título',
-              'artist': cloudItem['artist'] ?? 'Artista desconocido',
-              'duration': cloudItem['duration'] ?? 0,
-              '_data': '',
-              '_uri': '',
-              '_display_name': '${cloudItem['title']}.mp3',
-              '_display_name_wo_ext': cloudItem['title'],
-              '_size': 0,
-              'file_extension': 'mp3',
-              'date_added': cDate > 0 ? cDate : (DateTime.now().millisecondsSinceEpoch ~/ 1000),
-              'is_music': true,
-              'is_podcast': false,
-              'youtube_id': cYtId,
-              'url': cloudItem['url'] ?? '',
-              'is_cloud': true,
-            }));
-          }
         }
-
-        // Incorporar automáticamente cualquier canción local recién descargada en este celular
-        bool needsCloudSync = false;
-        for (var local in uniqueSongs.values) {
-          final lTitle = local.title.toLowerCase().trim();
-          final alreadyIncluded = userSongs.any((s) => s.id == local.id || s.title.toLowerCase().trim() == lTitle);
-          if (!alreadyIncluded) {
-            userSongs.add(local);
-            _cloudLibrarySongs.add({
-              'id': local.id,
-              'title': local.title,
-              'artist': local.artist ?? 'Artista desconocido',
-              'youtube_id': local.getMap['youtube_id'] ?? '',
-              'duration': local.duration ?? 0,
-              'added_at': DateTime.now().toIso8601String(),
-            });
-            needsCloudSync = true;
-          }
-        }
-
-        if (needsCloudSync) {
-          await syncPreferencesToCloud();
-        }
-
-        _allSongs = userSongs;
       }
-    } else {
-      _allSongs = uniqueSongs.values.toList();
+
+      if (isDuplicate) return;
+
+      // Asegurar fecha válida para ordenamiento por fecha
+      if (song.dateAdded == null || song.dateAdded == 0) {
+        try {
+          song.getMap['date_added'] = fallbackDate ?? (file.lastModifiedSync().millisecondsSinceEpoch ~/ 1000);
+        } catch (_) {
+          song.getMap['date_added'] = fallbackDate ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000);
+        }
+      }
+
+      seenPaths.add(canonicalPath);
+      verifiedSongs.add(song);
+    }
+
+    // 1. Agregar canciones reales de Android MediaStore
+    for (var song in fetchedSongs) {
+      if (song.isMusic == true || song.isPodcast == false) {
+        tryAddSong(song);
+      }
+    }
+
+    // 2. Agregar canciones de carpetas locales de NovaMusic que no estuvieran en MediaStore
+    for (var file in directFiles) {
+      final fileName = file.uri.pathSegments.last;
+      final cleanTitle = fileName.replaceAll(RegExp(r'\.(mp3|m4a|wav)$', caseSensitive: false), '').replaceAll('_', ' ').trim();
+      final stat = file.statSync();
+      final song = SongModel({
+        '_id': file.path.hashCode.abs() % 2147483647,
+        'title': cleanTitle,
+        'artist': 'NovaMusic',
+        '_data': file.path,
+        '_uri': file.uri.toString(),
+        '_display_name': fileName,
+        '_display_name_wo_ext': cleanTitle,
+        '_size': stat.size,
+        'file_extension': 'mp3',
+        'date_added': stat.modified.millisecondsSinceEpoch ~/ 1000,
+        'is_music': true,
+        'is_podcast': false,
+      });
+      tryAddSong(song, fallbackDate: stat.modified.millisecondsSinceEpoch ~/ 1000);
+    }
+
+    // 3. ASIGNAR LISTA FINAL (SOLO LOCALES, 100% REPRODUCIBLES, CERO DUPLICADOS)
+    _allSongs = verifiedSongs;
+
+    // 4. Sincronizar catálogo de respaldo en la nube del usuario (sin inyectar canciones fantasma en pantalla)
+    if (!isGuest) {
+      bool needsCloudSync = false;
+      for (var local in verifiedSongs) {
+        final localNorm = normalizeForDedup(local.title);
+        final inCloud = _cloudLibrarySongs.any((c) => normalizeForDedup(c['title'] ?? '') == localNorm);
+        if (!inCloud) {
+          _cloudLibrarySongs.add({
+            'id': local.id,
+            'title': local.title,
+            'artist': local.artist ?? 'Artista desconocido',
+            'youtube_id': '',
+            'duration': local.duration ?? 0,
+            'added_at': DateTime.now().toIso8601String(),
+          });
+          needsCloudSync = true;
+        }
+      }
+      if (needsCloudSync) {
+        await syncPreferencesToCloud();
+      }
     }
 
     _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
