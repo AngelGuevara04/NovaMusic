@@ -1,3 +1,4 @@
+import '../widgets/suggestion_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:on_audio_query/on_audio_query.dart';
@@ -494,6 +495,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     );
                   } else if (result == 'sort') {
                     _showSortDialog(context, provider);
+                  } else if (result == 'suggestions') {
+                    showSuggestionDialog(context);
                   } else if (result == 'profile') {
                     _showUserProfileDialog(context, provider);
                   } else if (result == 'restore_hidden') {
@@ -563,6 +566,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const PopupMenuDivider(),
+                  const PopupMenuItem<String>(
+                    value: 'suggestions',
+                    child: Row(
+                      children: [
+                        Icon(Icons.lightbulb_outline, color: Colors.amberAccent, size: 20),
+                        SizedBox(width: 12),
+                        Text('Buzón de sugerencias', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      ],
+                    ),
+                  ),
                   const PopupMenuItem<String>(
                     value: 'profile',
                     child: Row(

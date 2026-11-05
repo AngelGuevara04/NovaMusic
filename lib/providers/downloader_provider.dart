@@ -224,7 +224,25 @@ class DownloaderProvider extends ChangeNotifier {
   }
 
   Future<String> _getDownloadsDirectory() async {
-    // 1. Intentar carpeta estándar Music
+    // 1. Prioridad: Carpeta pública accesible /storage/emulated/0/Music/NovaMusic
+    try {
+      final targetDir = Directory('/storage/emulated/0/Music/NovaMusic');
+      if (!await targetDir.exists()) {
+        await targetDir.create(recursive: true);
+      }
+      return targetDir.path;
+    } catch (_) {}
+
+    // 2. Carpeta pública /storage/emulated/0/Download/NovaMusic
+    try {
+      final targetDir = Directory('/storage/emulated/0/Download/NovaMusic');
+      if (!await targetDir.exists()) {
+        await targetDir.create(recursive: true);
+      }
+      return targetDir.path;
+    } catch (_) {}
+
+    // 3. Carpeta externa Music estándar
     try {
       final musicDirs = await getExternalStorageDirectories(type: StorageDirectory.music);
       if (musicDirs != null && musicDirs.isNotEmpty) {
@@ -234,15 +252,6 @@ class DownloaderProvider extends ChangeNotifier {
         }
         return targetDir.path;
       }
-    } catch (_) {}
-
-    // 2. Intentar carpeta pública /storage/emulated/0/Music/NovaMusic
-    try {
-      final targetDir = Directory('/storage/emulated/0/Music/NovaMusic');
-      if (!await targetDir.exists()) {
-        await targetDir.create(recursive: true);
-      }
-      return targetDir.path;
     } catch (_) {}
 
     // 3. Intentar ruta externa derivada

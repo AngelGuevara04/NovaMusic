@@ -1,3 +1,4 @@
+import '../widgets/suggestion_dialog.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -195,6 +196,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         MaterialPageRoute(builder: (context) => const EqualizerScreen()),
                       );
                     },
+                  ),
+                ),
+                const SizedBox(height: 24),
+                _buildSectionHeader('COMUNIDAD Y SUGERENCIAS'),
+                Card(
+                  color: const Color(0xFF1E1E1E),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: ListTile(
+                    leading: const Icon(Icons.lightbulb_outline, color: Colors.amberAccent),
+                    title: const Text('Buzón de sugerencias y reportes', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                    subtitle: const Text(
+                      'Envía tus ideas o reporta fallos para las próximas versiones',
+                      style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                    ),
+                    trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                    onTap: () => showSuggestionDialog(context),
                   ),
                 ),
                 const SizedBox(height: 24),
