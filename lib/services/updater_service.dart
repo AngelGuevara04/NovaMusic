@@ -22,7 +22,7 @@ class ReleaseInfo {
 }
 
 class UpdaterService {
-  static const String currentVersion = '1.0.0+21';
+  static const String currentVersion = '1.0.0+22';
   static const String repoOwner = 'AngelGuevara04';
   static const String repoName = 'NovaMusic';
   static const MethodChannel _channel = MethodChannel('com.ajgm1.music/updater');

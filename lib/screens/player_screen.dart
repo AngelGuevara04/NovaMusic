@@ -4,6 +4,7 @@ import 'package:on_audio_query/on_audio_query.dart';
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 import 'package:just_audio/just_audio.dart';
 import '../providers/audio_provider.dart';
+import '../providers/downloader_provider.dart';
 import '../services/lyrics_service.dart';
 import 'equalizer_screen.dart';
 
@@ -161,38 +162,109 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 Consumer<AudioProvider>(
                   builder: (context, provider, child) {
                     final isFav = provider.isFavorite(song.id);
-                    return InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: () => provider.toggleFavorite(song),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: isFav ? Colors.redAccent.withValues(alpha: 0.15) : Colors.white10,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: isFav ? Colors.redAccent.withValues(alpha: 0.6) : Colors.white24,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              isFav ? Icons.favorite : Icons.favorite_border,
-                              color: isFav ? Colors.redAccent : Colors.white70,
-                              size: 18,
+                    final isCloud = provider.isCloudSong(song);
+
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (provider.isConnectingCloudStream)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 8),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.lightBlueAccent),
+                                ),
+                                SizedBox(width: 8),
+                                Text(
+                                  'Conectando audio en la nube...',
+                                  style: TextStyle(color: Colors.lightBlueAccent, fontSize: 12),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 6),
-                            Text(
-                              isFav ? 'En tus favoritas' : 'Añadir a favoritas',
-                              style: TextStyle(
-                                color: isFav ? Colors.redAccent : Colors.white70,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
+                          ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          alignment: WrapAlignment.center,
+                          children: [
+                            InkWell(
+                              borderRadius: BorderRadius.circular(20),
+                              onTap: () => provider.toggleFavorite(song),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: isFav ? Colors.redAccent.withValues(alpha: 0.15) : Colors.white10,
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: isFav ? Colors.redAccent.withValues(alpha: 0.6) : Colors.white24,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      isFav ? Icons.favorite : Icons.favorite_border,
+                                      color: isFav ? Colors.redAccent : Colors.white70,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      isFav ? 'En tus favoritas' : 'Añadir a favoritas',
+                                      style: TextStyle(
+                                        color: isFav ? Colors.redAccent : Colors.white70,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
+                            if (isCloud)
+                              InkWell(
+                                borderRadius: BorderRadius.circular(20),
+                                onTap: () {
+                                  final downloader = Provider.of<DownloaderProvider>(context, listen: false);
+                                  String query = song.getMap['youtube_id']?.toString() ?? '';
+                                  if (query.isEmpty) {
+                                    query = '${song.title} ${song.artist ?? ""}';
+                                  } else if (!query.startsWith('http')) {
+                                    query = 'https://www.youtube.com/watch?v=$query';
+                                  }
+                                  downloader.startDownload(query, onSuccess: () {
+                                    provider.fetchSongs();
+                                  });
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('Descargando "${song.title}" a este celular...')),
+                                  );
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.lightBlueAccent.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(color: Colors.lightBlueAccent.withValues(alpha: 0.6)),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.download_rounded, color: Colors.lightBlueAccent, size: 18),
+                                      SizedBox(width: 6),
+                                      Text(
+                                        'Descargar offline',
+                                        style: TextStyle(color: Colors.lightBlueAccent, fontSize: 13, fontWeight: FontWeight.w600),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
-                      ),
+                      ],
                     );
                   },
                 ),

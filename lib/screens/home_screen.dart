@@ -162,11 +162,29 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: _buildStatCard(
                       icon: Icons.library_music,
                       color: Colors.deepPurpleAccent,
-                      title: 'Biblioteca',
+                      title: 'Total',
                       value: '${provider.totalSongsCount}',
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _buildStatCard(
+                      icon: Icons.phone_android,
+                      color: Colors.greenAccent,
+                      title: 'Locales',
+                      value: '${provider.localSongsCount}',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _buildStatCard(
+                      icon: Icons.cloud_outlined,
+                      color: Colors.lightBlueAccent,
+                      title: 'En Nube',
+                      value: '${provider.cloudOnlySongsCount}',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: _buildStatCard(
                       icon: Icons.favorite,
@@ -175,19 +193,28 @@ class _HomeScreenState extends State<HomeScreen> {
                       value: '${provider.totalFavoritesCount}',
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildStatCard(
-                      icon: Icons.visibility_off,
-                      color: Colors.amberAccent,
-                      title: 'Ocultas',
-                      value: '${provider.totalHiddenCount}',
-                    ),
-                  ),
                 ],
               ),
               const SizedBox(height: 18),
               if (!isGuest) ...[
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.cloud_upload_outlined, color: Colors.lightBlueAccent),
+                  title: const Text('Subir canciones locales a mi Nube', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('Respalda la música de este celular para escucharla en otros dispositivos', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await provider.syncLocalSongsToCloud();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('☁️ Canciones respaldadas en tu Nube de @$username'),
+                          backgroundColor: const Color(0xFF262626),
+                        ),
+                      );
+                    }
+                  },
+                ),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.sync, color: Colors.deepPurpleAccent),

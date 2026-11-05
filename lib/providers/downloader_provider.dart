@@ -10,6 +10,9 @@ import 'package:media_scanner/media_scanner.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/youtube_audio_source.dart';
 
 class DownloadTask {
   String id = UniqueKey().toString();
@@ -484,6 +487,41 @@ class DownloaderProvider extends ChangeNotifier {
       task.isDownloading = false;
       notifyListeners();
 
+      // Auto-registrar en la biblioteca en la nube del usuario actual
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final username = prefs.getString('current_username');
+        if (username != null && username.isNotEmpty) {
+          final supabase = Supabase.instance.client;
+          final res = await supabase.from('user_preferences').select('library_songs').eq('username', username).maybeSingle();
+          List<dynamic> existing = res != null && res['library_songs'] != null ? List.from(res['library_songs']) : [];
+          
+          String ytId = '';
+          final reg = RegExp(r'(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})');
+          final m = reg.firstMatch(task.url);
+          if (m != null) ytId = m.group(1) ?? '';
+
+          final exists = existing.any((item) => (item is Map && (item['title'] == task.title || (ytId.isNotEmpty && item['youtube_id'] == ytId))));
+          if (!exists) {
+            existing.add({
+              'id': DateTime.now().millisecondsSinceEpoch,
+              'title': task.title,
+              'artist': 'Descargado',
+              'youtube_id': ytId,
+              'url': task.url,
+              'file_name': safeFileName,
+              'added_at': DateTime.now().toIso8601String(),
+            });
+            await supabase.from('user_preferences').update({
+              'library_songs': existing,
+              'last_active': DateTime.now().toIso8601String(),
+            }).eq('username', username);
+          }
+        }
+      } catch (e) {
+        print('Error registrando canción en nube: $e');
+      }
+
       _showSuccessNotification(task);
       onSuccess();
     } catch (e) {
@@ -565,35 +603,3 @@ class DownloaderProvider extends ChangeNotifier {
 }
 
 
-class YouTubeAudioSource extends StreamAudioSource {
-  final Uri uri;
-  final int totalBytes;
-  final String contentType;
-  final http.Client _client = http.Client();
-
-  YouTubeAudioSource({
-    required this.uri,
-    required this.totalBytes,
-    required this.contentType,
-  });
-
-  @override
-  Future<StreamAudioResponse> request([int? start, int? end]) async {
-    start ??= 0;
-    end ??= totalBytes;
-
-    final request = http.Request('GET', uri);
-    request.headers['Range'] = 'bytes=$start-${end - 1}';
-    request.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
-    final response = await _client.send(request);
-
-    return StreamAudioResponse(
-      rangeRequestsSupported: true,
-      sourceLength: totalBytes,
-      contentLength: response.contentLength ?? (end - start),
-      offset: start,
-      stream: response.stream,
-      contentType: contentType,
-    );
-  }
-}

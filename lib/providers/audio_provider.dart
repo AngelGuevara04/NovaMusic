@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import '../services/youtube_audio_source.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:on_audio_query/on_audio_query.dart';
@@ -21,6 +24,9 @@ class AudioProvider with ChangeNotifier {
   List<int> _favoriteSongIds = [];
   String? _currentUsername;
   bool _showOnlyFavorites = false;
+  List<Map<String, dynamic>> _cloudLibrarySongs = [];
+  bool _isConnectingCloudStream = false;
+  final YoutubeExplode _ytCloud = YoutubeExplode();
   
   int? _currentIndex;
   bool _isPlaying = false;
@@ -59,6 +65,41 @@ class AudioProvider with ChangeNotifier {
   int get totalSongsCount => _visibleSongs.length;
   int get totalFavoritesCount => _favoriteSongIds.length;
   int get totalHiddenCount => _hiddenSongIds.length;
+  List<Map<String, dynamic>> get cloudLibrarySongs => _cloudLibrarySongs;
+  bool get isConnectingCloudStream => _isConnectingCloudStream;
+  int get localSongsCount => _visibleSongs.where((s) => !isCloudSong(s)).length;
+  int get cloudOnlySongsCount => _visibleSongs.where((s) => isCloudSong(s)).length;
+
+  bool isCloudSong(SongModel song) {
+    if (song.getMap['is_cloud'] == true) return true;
+    if (song.data.isEmpty) return true;
+    final f = File(song.data);
+    return !f.existsSync();
+  }
+
+  Future<void> syncLocalSongsToCloud() async {
+    final prefs = await SharedPreferences.getInstance();
+    final username = _currentUsername ?? prefs.getString('current_username');
+    if (username == null || username.isEmpty) return;
+
+    for (var s in _visibleSongs) {
+      final title = s.title.trim();
+      final exists = _cloudLibrarySongs.any((c) => (c['title'] ?? '').toString().toLowerCase().trim() == title.toLowerCase());
+      if (!exists) {
+        _cloudLibrarySongs.add({
+          'id': s.id,
+          'title': title,
+          'artist': s.artist ?? 'Artista desconocido',
+          'youtube_id': s.getMap['youtube_id'] ?? '',
+          'duration': s.duration ?? 0,
+          'added_at': DateTime.now().toIso8601String(),
+        });
+      }
+    }
+    await syncPreferencesToCloud();
+    await fetchSongs();
+    notifyListeners();
+  }
 
   void setShowOnlyFavorites(bool val) {
     if (_showOnlyFavorites != val) {
@@ -118,6 +159,7 @@ class AudioProvider with ChangeNotifier {
         'username': username,
         'hidden_songs': _hiddenSongIds.map((e) => e.toString()).toList(),
         'favorite_songs': _favoriteSongIds.map((e) => e.toString()).toList(),
+        'library_songs': _cloudLibrarySongs,
         'auto_delete': autoDelete,
         'last_active': DateTime.now().toIso8601String(),
       });
@@ -168,6 +210,13 @@ class AudioProvider with ChangeNotifier {
     await _setupAudioSession();
 
     _currentUsername = prefs.getString('current_username');
+    final cachedLib = prefs.getString('cached_library_songs');
+    if (cachedLib != null && cachedLib.isNotEmpty) {
+      try {
+        final List<dynamic> parsed = jsonDecode(cachedLib);
+        _cloudLibrarySongs = parsed.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
     await _loadHiddenSongs();
     await _loadFavoriteSongs();
     _listenToPlayerEvents();
@@ -286,6 +335,13 @@ class AudioProvider with ChangeNotifier {
           await prefs.setBool('auto_delete_from_device', autoDel);
         }
 
+        // 4. Biblioteca personal de canciones en la nube
+        if (response['library_songs'] != null) {
+          List<dynamic> lib = response['library_songs'];
+          _cloudLibrarySongs = lib.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
+        }
+
         // 4. Actualizar última conexión
         try {
           await supabase.from('user_preferences').update({
@@ -395,7 +451,70 @@ class AudioProvider with ChangeNotifier {
 
     // Check if the visible songs changed to prevent unnecessary audio restarts
     final oldSongIds = _visibleSongs.map((s) => s.id).toList();
-    _allSongs = uniqueSongs.values.toList();
+    
+    // Si el usuario tiene sesión iniciada, aislar su biblioteca personalizada
+    if (!isGuest) {
+      if (_cloudLibrarySongs.isEmpty && uniqueSongs.isNotEmpty) {
+        // Primera vez en este dispositivo: auto-respaldar las canciones locales en su nube
+        _cloudLibrarySongs = uniqueSongs.values.map((s) => {
+          'id': s.id,
+          'title': s.title,
+          'artist': s.artist ?? 'Artista desconocido',
+          'youtube_id': '',
+          'duration': s.duration ?? 0,
+          'added_at': DateTime.now().toIso8601String(),
+        }).toList();
+        await syncPreferencesToCloud();
+        _allSongs = uniqueSongs.values.toList();
+      } else {
+        // Construir la biblioteca exclusiva de este usuario (locales + nube)
+        final List<SongModel> userSongs = [];
+        for (var cloudItem in _cloudLibrarySongs) {
+          final cTitle = (cloudItem['title'] ?? '').toString().toLowerCase().trim();
+          final cYtId = cloudItem['youtube_id']?.toString() ?? '';
+          
+          SongModel? matchedLocal;
+          for (var local in uniqueSongs.values) {
+            final lTitle = local.title.toLowerCase().trim();
+            final lName = local.displayName.toLowerCase().trim();
+            if (lTitle == cTitle || lName.contains(cTitle) || (cTitle.isNotEmpty && lTitle.contains(cTitle))) {
+              matchedLocal = local;
+              break;
+            }
+          }
+
+          if (matchedLocal != null && File(matchedLocal.data).existsSync()) {
+            matchedLocal.getMap['youtube_id'] = cYtId;
+            matchedLocal.getMap['is_cloud'] = false;
+            userSongs.add(matchedLocal);
+          } else {
+            // Canción en la nube para este teléfono
+            userSongs.add(SongModel({
+              '_id': cloudItem['id'] ?? (cTitle.hashCode.abs() % 2147483647),
+              'title': cloudItem['title'] ?? 'Canción sin título',
+              'artist': cloudItem['artist'] ?? 'Artista desconocido',
+              'duration': cloudItem['duration'] ?? 0,
+              '_data': '',
+              '_uri': '',
+              '_display_name': '${cloudItem['title']}.mp3',
+              '_display_name_wo_ext': cloudItem['title'],
+              '_size': 0,
+              'file_extension': 'mp3',
+              'is_music': true,
+              'is_podcast': false,
+              'youtube_id': cYtId,
+              'url': cloudItem['url'] ?? '',
+              'is_cloud': true,
+            }));
+          }
+        }
+        _allSongs = userSongs;
+      }
+    } else {
+      // Modo invitado: muestra las canciones físicas del dispositivo
+      _allSongs = uniqueSongs.values.toList();
+    }
+
     _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
     _applySort();
     final newSongIds = _visibleSongs.map((s) => s.id).toList();
@@ -488,8 +607,74 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
+  Future<void> _playCloudSong(SongModel song, int index) async {
+    try {
+      _currentIndex = index;
+      _isPlaying = false;
+      _isConnectingCloudStream = true;
+      notifyListeners();
+
+      String ytId = song.getMap['youtube_id']?.toString() ?? '';
+      if (ytId.isEmpty) {
+        final searchResults = await _ytCloud.search.search('${song.title} ${song.artist ?? ""}');
+        if (searchResults.isNotEmpty) {
+          ytId = searchResults.first.id.value;
+          song.getMap['youtube_id'] = ytId;
+        }
+      }
+
+      if (ytId.isEmpty) {
+        throw Exception("No se encontró el audio en la nube");
+      }
+
+      final manifest = await _ytCloud.videos.streamsClient.getManifest(ytId).timeout(const Duration(seconds: 12));
+      StreamInfo? streamInfo;
+      final mp4Audios = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
+      if (mp4Audios.isNotEmpty) {
+        streamInfo = mp4Audios.withHighestBitrate();
+      } else if (manifest.audioOnly.isNotEmpty) {
+        streamInfo = manifest.audioOnly.withHighestBitrate();
+      } else if (manifest.muxed.isNotEmpty) {
+        streamInfo = manifest.muxed.withHighestBitrate();
+      }
+
+      if (streamInfo == null) throw Exception("Stream no disponible");
+
+      final contentType = streamInfo.container.name.toLowerCase() == 'mp4' ? 'audio/mp4' : 'audio/webm';
+      final mediaItem = MediaItem(
+        id: song.id.toString(),
+        title: song.title,
+        artist: (song.artist != null && song.artist!.isNotEmpty) ? song.artist! : 'En la Nube ☁️',
+        album: 'NovaMusic Nube',
+      );
+
+      final source = YouTubeAudioSource(
+        uri: streamInfo.url,
+        totalBytes: streamInfo.size.totalBytes,
+        contentType: contentType,
+        tag: mediaItem,
+      );
+
+      await _audioPlayer.setAudioSource(source).timeout(const Duration(seconds: 12));
+      _isConnectingCloudStream = false;
+      _isPlaying = true;
+      notifyListeners();
+      await _audioPlayer.play();
+    } catch (e) {
+      _isConnectingCloudStream = false;
+      notifyListeners();
+      print('Error streaming cloud song: $e');
+    }
+  }
+
   Future<void> playSong(int index) async {
     if (index < 0 || index >= _visibleSongs.length) return;
+
+    final targetSong = songs[index];
+    if (isCloudSong(targetSong)) {
+      await _playCloudSong(targetSong, index);
+      return;
+    }
 
     if (_playlist == null || _needsPlaylistRebuild) {
       await _setupAudioSource(initialIndex: index);
