@@ -293,6 +293,55 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _showSortDialog(BuildContext context, AudioProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.sort, color: Colors.deepPurpleAccent),
+            SizedBox(width: 8),
+            Text('Ordenar canciones', style: TextStyle(color: Colors.white, fontSize: 18)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.sort_by_alpha, color: provider.currentSort == 'title' ? Colors.deepPurpleAccent : Colors.white70),
+              title: Text('Por Título', style: TextStyle(color: provider.currentSort == 'title' ? Colors.deepPurpleAccent : Colors.white, fontWeight: provider.currentSort == 'title' ? FontWeight.bold : FontWeight.normal)),
+              trailing: provider.currentSort == 'title' ? const Icon(Icons.check, color: Colors.deepPurpleAccent) : null,
+              onTap: () {
+                provider.sortSongsBy('title');
+                Navigator.pop(ctx);
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.person, color: provider.currentSort == 'artist' ? Colors.deepPurpleAccent : Colors.white70),
+              title: Text('Por Artista', style: TextStyle(color: provider.currentSort == 'artist' ? Colors.deepPurpleAccent : Colors.white, fontWeight: provider.currentSort == 'artist' ? FontWeight.bold : FontWeight.normal)),
+              trailing: provider.currentSort == 'artist' ? const Icon(Icons.check, color: Colors.deepPurpleAccent) : null,
+              onTap: () {
+                provider.sortSongsBy('artist');
+                Navigator.pop(ctx);
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.access_time, color: provider.currentSort == 'date' ? Colors.deepPurpleAccent : Colors.white70),
+              title: Text('Por Fecha (Recientes)', style: TextStyle(color: provider.currentSort == 'date' ? Colors.deepPurpleAccent : Colors.white, fontWeight: provider.currentSort == 'date' ? FontWeight.bold : FontWeight.normal)),
+              trailing: provider.currentSort == 'date' ? const Icon(Icons.check, color: Colors.deepPurpleAccent) : null,
+              onTap: () {
+                provider.sortSongsBy('date');
+                Navigator.pop(ctx);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -404,7 +453,20 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.cloud_download, color: Colors.white),
+            icon: Icon(_isSearching ? Icons.close : Icons.search, color: Colors.white),
+            tooltip: _isSearching ? 'Cerrar búsqueda' : 'Buscar canción',
+            onPressed: () {
+              setState(() {
+                _isSearching = !_isSearching;
+                if (!_isSearching) {
+                  _searchController.clear();
+                  Provider.of<AudioProvider>(context, listen: false).searchSongs('');
+                }
+              });
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.cloud_download_outlined, color: Colors.white),
             tooltip: 'Descargar música',
             onPressed: () {
               Navigator.push(
@@ -416,102 +478,113 @@ class _HomeScreenState extends State<HomeScreen> {
           Consumer<AudioProvider>(
             builder: (context, provider, child) {
               final hasTimer = provider.sleepTimerEndTime != null;
-              return IconButton(
-                icon: Icon(Icons.bedtime, color: hasTimer ? Colors.deepPurpleAccent : Colors.white),
-                tooltip: hasTimer ? 'Temporizador activo' : 'Temporizador de apagado',
-                onPressed: () => _showSleepTimerDialog(context, provider),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings_outlined, color: Colors.white),
-            tooltip: 'Configuración',
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const SettingsScreen()),
-              );
-            },
-          ),
-          Consumer<AudioProvider>(
-            builder: (context, provider, child) {
+
               return PopupMenuButton<String>(
-                icon: const Icon(Icons.sort, color: Colors.white),
+                icon: const Icon(Icons.more_vert, color: Colors.white),
+                tooltip: 'Opciones de la aplicación',
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                color: const Color(0xFF262626),
                 onSelected: (String result) async {
-                  if (result == 'settings') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const SettingsScreen()),
-                    );
+                  if (result == 'sleep_timer') {
+                    _showSleepTimerDialog(context, provider);
                   } else if (result == 'equalizer') {
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (context) => const EqualizerScreen()),
                     );
+                  } else if (result == 'sort') {
+                    _showSortDialog(context, provider);
+                  } else if (result == 'profile') {
+                    _showUserProfileDialog(context, provider);
                   } else if (result == 'restore_hidden') {
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (context) => const HiddenSongsScreen()),
                     );
-                  } else if (result == 'logout') {
-                    final prefs = await SharedPreferences.getInstance();
-                    await prefs.remove('current_username');
-                    if (context.mounted) {
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(builder: (context) => const LoginScreen()),
-                      );
-                    }
-                  } else {
-                    provider.sortSongsBy(result);
+                  } else if (result == 'settings') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const SettingsScreen()),
+                    );
                   }
                 },
                 itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                  const PopupMenuItem<String>(
-                    value: 'title',
-                    child: Text('Ordenar por Título'),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'artist',
-                    child: Text('Ordenar por Artista'),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'date',
-                    child: Text('Ordenar por Fecha (Nuevos)'),
-                  ),
-                  const PopupMenuDivider(),
-                  const PopupMenuItem<String>(
-                    value: 'settings',
-                    child: Text('Configuración', style: TextStyle(color: Colors.white)),
+                  PopupMenuItem<String>(
+                    value: 'sleep_timer',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.bedtime_outlined,
+                          color: hasTimer ? Colors.deepPurpleAccent : Colors.white70,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            hasTimer ? 'Temporizador (Activo)' : 'Temporizador de apagado',
+                            style: TextStyle(
+                              color: hasTimer ? Colors.deepPurpleAccent : Colors.white,
+                              fontWeight: hasTimer ? FontWeight.bold : FontWeight.normal,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   const PopupMenuItem<String>(
                     value: 'equalizer',
-                    child: Text('Ecualizador y Audio', style: TextStyle(color: Colors.deepPurpleAccent)),
+                    child: Row(
+                      children: [
+                        Icon(Icons.equalizer, color: Colors.deepPurpleAccent, size: 20),
+                        SizedBox(width: 12),
+                        Text('Ecualizador y Audio', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'sort',
+                    child: Row(
+                      children: [
+                        Icon(Icons.sort, color: Colors.cyanAccent, size: 20),
+                        SizedBox(width: 12),
+                        Text('Ordenar lista...', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      ],
+                    ),
                   ),
                   const PopupMenuItem<String>(
                     value: 'restore_hidden',
-                    child: Text('Restaurar ocultas', style: TextStyle(color: Colors.redAccent)),
+                    child: Row(
+                      children: [
+                        Icon(Icons.visibility_off_outlined, color: Colors.amberAccent, size: 20),
+                        SizedBox(width: 12),
+                        Text('Canciones descartadas', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      ],
+                    ),
                   ),
                   const PopupMenuDivider(),
                   const PopupMenuItem<String>(
-                    value: 'logout',
-                    child: Text('Cambiar Usuario', style: TextStyle(color: Colors.orangeAccent)),
+                    value: 'profile',
+                    child: Row(
+                      children: [
+                        Icon(Icons.account_circle_outlined, color: Colors.orangeAccent, size: 20),
+                        SizedBox(width: 12),
+                        Text('Mi Perfil / Nube', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'settings',
+                    child: Row(
+                      children: [
+                        Icon(Icons.settings_outlined, color: Colors.white70, size: 20),
+                        SizedBox(width: 12),
+                        Text('Configuración', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      ],
+                    ),
                   ),
                 ],
               );
-            },
-          ),
-          IconButton(
-            icon: Icon(_isSearching ? Icons.close : Icons.search, color: Colors.white),
-            tooltip: _isSearching ? 'Cerrar búsqueda' : 'Buscar',
-            onPressed: () {
-              setState(() {
-                _isSearching = !_isSearching;
-                if (!_isSearching) {
-                  _searchController.clear();
-                  Provider.of<AudioProvider>(context, listen: false).searchSongs('');
-                }
-              });
             },
           ),
         ],

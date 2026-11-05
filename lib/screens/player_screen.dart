@@ -5,6 +5,7 @@ import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 import 'package:just_audio/just_audio.dart';
 import '../providers/audio_provider.dart';
 import '../providers/downloader_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/lyrics_service.dart';
 import 'equalizer_screen.dart';
 
@@ -20,6 +21,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   List<LyricsLine> _lyrics = [];
   bool _loadingLyrics = false;
   String? _loadedSongKey;
+  int _lyricsOffsetMs = 0;
+  final ScrollController _lyricsScrollController = ScrollController();
+  int _lastActiveIndex = -1;
+  DateTime? _lastUserScrollTime;
+
+  @override
+  void dispose() {
+    _lyricsScrollController.dispose();
+    super.dispose();
+  }
 
   void _loadLyricsForSong(SongModel song) async {
     final key = '${song.title}_${song.artist}';
@@ -27,15 +38,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
     setState(() {
       _loadingLyrics = true;
       _loadedSongKey = key;
+      _lastActiveIndex = -1;
     });
+
+    final prefs = await SharedPreferences.getInstance();
+    final savedOffset = prefs.getInt('lyrics_offset_${song.id}') ?? 0;
 
     final fetched = await LyricsService.fetchLyrics(song.title, song.artist ?? '');
     if (mounted) {
       setState(() {
         _lyrics = fetched;
         _loadingLyrics = false;
+        _lyricsOffsetMs = savedOffset;
       });
     }
+  }
+
+  void _updateLyricsOffset(int deltaMs, int songId) async {
+    setState(() {
+      _lyricsOffsetMs += deltaMs;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('lyrics_offset_$songId', _lyricsOffsetMs);
+  }
+
+  void _resetLyricsOffset(int songId) async {
+    setState(() {
+      _lyricsOffsetMs = 0;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('lyrics_offset_$songId');
   }
 
   @override
@@ -389,45 +421,220 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
     }
 
+    final hasSyncedLyrics = _lyrics.any((l) => l.timestamp > Duration.zero);
+
     return Consumer<AudioProvider>(
       builder: (context, provider, child) {
         final currentPos = provider.currentPosition;
-        
-        // Find current lyric index
+        // Compensación de corte de silencio (+/- ms)
+        final effectivePos = currentPos + Duration(milliseconds: _lyricsOffsetMs);
+
+        // Buscar línea activa
         int activeIndex = -1;
-        for (int i = 0; i < _lyrics.length; i++) {
-          if (_lyrics[i].timestamp <= currentPos) {
-            activeIndex = i;
-          } else {
-            break;
+        if (hasSyncedLyrics) {
+          for (int i = 0; i < _lyrics.length; i++) {
+            if (_lyrics[i].timestamp <= effectivePos) {
+              activeIndex = i;
+            } else {
+              break;
+            }
           }
         }
 
+        // Auto-desplazamiento suave para centrar la letra activa
+        if (activeIndex != _lastActiveIndex && activeIndex != -1) {
+          _lastActiveIndex = activeIndex;
+          final now = DateTime.now();
+          final userRecentlyScrolled = _lastUserScrollTime != null &&
+              now.difference(_lastUserScrollTime!).inSeconds < 3;
+
+          if (!userRecentlyScrolled && _lyricsScrollController.hasClients) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!_lyricsScrollController.hasClients) return;
+              final target = (activeIndex * 60.0) - 140.0;
+              final maxScroll = _lyricsScrollController.position.maxScrollExtent;
+              final clamped = target.clamp(0.0, maxScroll);
+              _lyricsScrollController.animateTo(
+                clamped,
+                duration: const Duration(milliseconds: 350),
+                curve: Curves.easeOutCubic,
+              );
+            });
+          }
+        }
+
+        final currentSong = provider.currentSong;
+
         return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: const Color(0xFF1E1E1E),
             borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.white12),
           ),
-          child: ListView.builder(
-            itemCount: _lyrics.length,
-            itemBuilder: (context, index) {
-              final line = _lyrics[index];
-              final isActive = index == activeIndex;
-
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8.0),
-                child: Text(
-                  line.text,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: isActive ? 20 : 16,
-                    fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-                    color: isActive ? Colors.white : const Color(0xFF9E9E9E),
+          child: Column(
+            children: [
+              // Barra de sincronización / calibración de silencio
+              if (hasSyncedLyrics && currentSong != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF161616),
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.sync, size: 14, color: Colors.white54),
+                      const SizedBox(width: 4),
+                      const Text(
+                        'Silencio:',
+                        style: TextStyle(fontSize: 11, color: Colors.white54),
+                      ),
+                      const SizedBox(width: 6),
+                      // -0.5s
+                      InkWell(
+                        onTap: () => _updateLyricsOffset(-500, currentSong.id),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white12,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text('-0.5s', style: TextStyle(fontSize: 10, color: Colors.white70)),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      // -0.1s
+                      InkWell(
+                        onTap: () => _updateLyricsOffset(-100, currentSong.id),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white12,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text('-0.1s', style: TextStyle(fontSize: 10, color: Colors.white70)),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      // Indicador de Offset actual
+                      GestureDetector(
+                        onTap: () => _resetLyricsOffset(currentSong.id),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: _lyricsOffsetMs != 0 ? Colors.deepPurpleAccent.withOpacity(0.3) : Colors.transparent,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '${_lyricsOffsetMs >= 0 ? '+' : ''}${(_lyricsOffsetMs / 1000.0).toStringAsFixed(1)}s',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: _lyricsOffsetMs != 0 ? Colors.cyanAccent : Colors.white70,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      // +0.1s
+                      InkWell(
+                        onTap: () => _updateLyricsOffset(100, currentSong.id),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white12,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text('+0.1s', style: TextStyle(fontSize: 10, color: Colors.white70)),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      // +0.5s
+                      InkWell(
+                        onTap: () => _updateLyricsOffset(500, currentSong.id),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white12,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text('+0.5s', style: TextStyle(fontSize: 10, color: Colors.white70)),
+                        ),
+                      ),
+                      if (_lyricsOffsetMs != 0) ...[
+                        const SizedBox(width: 4),
+                        InkWell(
+                          onTap: () => _resetLyricsOffset(currentSong.id),
+                          borderRadius: BorderRadius.circular(8),
+                          child: const Padding(
+                            padding: EdgeInsets.all(2.0),
+                            child: Icon(Icons.restart_alt, size: 14, color: Colors.orangeAccent),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-              );
-            },
+              // Lista con seguimiento en tiempo real
+              Expanded(
+                child: NotificationListener<ScrollNotification>(
+                  onNotification: (notification) {
+                    if (notification is ScrollStartNotification && notification.dragDetails != null) {
+                      _lastUserScrollTime = DateTime.now();
+                    }
+                    return false;
+                  },
+                  child: ListView.builder(
+                    controller: _lyricsScrollController,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                    itemCount: _lyrics.length,
+                    itemBuilder: (context, index) {
+                      final line = _lyrics[index];
+                      final isActive = index == activeIndex;
+                      final isNear = (index - activeIndex).abs() == 1;
+
+                      return GestureDetector(
+                        onTap: hasSyncedLyrics
+                            ? () {
+                                final seekTarget = line.timestamp - Duration(milliseconds: _lyricsOffsetMs);
+                                provider.seekTo(seekTarget < Duration.zero ? Duration.zero : seekTarget);
+                              }
+                            : null,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 250),
+                          margin: const EdgeInsets.symmetric(vertical: 4.0),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: isActive ? Colors.deepPurpleAccent.withOpacity(0.22) : Colors.transparent,
+                            borderRadius: BorderRadius.circular(12),
+                            border: isActive
+                                ? Border.all(color: Colors.deepPurpleAccent.withOpacity(0.4), width: 1)
+                                : null,
+                          ),
+                          child: Text(
+                            line.text,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: isActive ? 21 : (isNear ? 16 : 15),
+                              fontWeight: isActive ? FontWeight.bold : FontWeight.w400,
+                              color: isActive
+                                  ? Colors.white
+                                  : (isNear ? Colors.white70 : const Color(0xFF757575)),
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ],
           ),
         );
       },
