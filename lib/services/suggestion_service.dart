@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'dart:io';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,7 +13,9 @@ class SuggestionService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final username = prefs.getString('current_username') ?? 'Melómano Anónimo';
-      final platform = Platform.isAndroid ? 'Android' : (Platform.isWindows ? 'Windows' : 'Otro');
+      final platform = kIsWeb
+          ? 'Web (PC)'
+          : (Platform.isAndroid ? 'Android' : (Platform.isWindows ? 'Windows' : 'Otro'));
       final version = UpdaterService.currentVersion;
 
       final supabase = Supabase.instance.client;

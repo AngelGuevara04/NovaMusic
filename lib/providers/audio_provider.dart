@@ -98,10 +98,15 @@ class AudioProvider with ChangeNotifier {
   int get cloudOnlySongsCount => _visibleSongs.where((s) => isCloudSong(s)).length;
 
   bool isCloudSong(SongModel song) {
+    if (kIsWeb) return true;
     if (song.getMap['is_cloud'] == true) return true;
     if (song.data.isEmpty) return true;
-    final f = File(song.data);
-    return !f.existsSync();
+    try {
+      final f = File(song.data);
+      return !f.existsSync();
+    } catch (_) {
+      return true;
+    }
   }
 
   Future<void> syncLocalSongsToCloud() async {
@@ -289,7 +294,8 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> _setupAudioSession() async {
-    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) return;
+    if (kIsWeb) return;
+    if (!Platform.isAndroid && !Platform.isIOS) return;
     try {
       final session = await AudioSession.instance;
       await session.configure(const AudioSessionConfiguration.music());
@@ -456,6 +462,11 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> checkAndRequestPermissions() async {
+    if (kIsWeb) {
+      await fetchSongs();
+      return;
+    }
+
     // Permiso de notificaciones (Android 13+)
     if (await Permission.notification.isDenied) {
       await Permission.notification.request();
@@ -508,7 +519,24 @@ class AudioProvider with ChangeNotifier {
 
   List<SongModel> get hiddenSongs => _allSongs.where((s) => _hiddenSongIds.contains(s.id)).toList();
 
-    Future<void> fetchSongs() async {
+  Future<void> fetchSongs() async {
+    if (kIsWeb) {
+      _allSongs = _cloudLibrarySongs.map((c) => SongModel({
+        '_id': c['id'] is int ? c['id'] : int.tryParse(c['id'].toString()) ?? DateTime.now().millisecondsSinceEpoch,
+        'title': c['title'] ?? 'Sin título',
+        'artist': c['artist'] ?? 'Artista desconocido',
+        'duration': c['duration'] is int ? c['duration'] : int.tryParse(c['duration'].toString()) ?? 0,
+        '_data': c['url'] ?? '',
+        'is_cloud': true,
+        'youtube_id': c['youtube_id'] ?? '',
+      })).toList();
+      _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
+      _applySort();
+      _needsPlaylistRebuild = true;
+      notifyListeners();
+      return;
+    }
+
     final oldSongIds = _visibleSongs.map((s) => s.id).toList();
     List<SongModel> fetchedSongs = await _audioQuery.querySongs(
       sortType: null,
@@ -988,6 +1016,13 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<bool> deletePhysicalSong(SongModel song) async {
+    if (kIsWeb) {
+      _allSongs.removeWhere((s) => s.id == song.id);
+      _visibleSongs.removeWhere((s) => s.id == song.id);
+      await _handleSongRemoved(song);
+      notifyListeners();
+      return true;
+    }
     try {
       final file = File(song.data);
       if (await file.exists()) {

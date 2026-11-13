@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -96,6 +97,7 @@ class DownloaderProvider extends ChangeNotifier {
   }
 
   Future<void> _initNotifications() async {
+    if (kIsWeb) return;
     if (_initialized) return;
     
     if (Platform.isAndroid) {
@@ -547,7 +549,7 @@ class DownloaderProvider extends ChangeNotifier {
       File tempFile = File(tempPath);
       await tempFile.copy(finalPath);
 
-      if (Platform.isAndroid) {
+      if (!kIsWeb && Platform.isAndroid) {
         await MediaScanner.loadMedia(path: finalPath);
       }
 
