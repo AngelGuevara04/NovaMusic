@@ -1,46 +1,191 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="NovaMusic - Tu Reproductor de Música Personal y en la Nube">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="personal_music_app">
+  <meta name="apple-mobile-web-app-title" content="NovaMusic">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>personal_music_app</title>
+  <title>NovaMusic</title>
   <link rel="manifest" href="manifest.json">
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      background-color: #121212 !important;
+      color: #ffffff;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      user-select: none;
+    }
+
+    #loading-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: radial-gradient(circle at 50% 40%, #1e1333 0%, #121212 70%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 999999;
+      transition: opacity 0.5s ease-out, visibility 0.5s ease-out;
+    }
+
+    .logo-wrapper {
+      position: relative;
+      width: 96px;
+      height: 96px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .logo-glow {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border-radius: 28px;
+      background: linear-gradient(135deg, #7C4DFF, #B388FF);
+      opacity: 0.35;
+      filter: blur(16px);
+      animation: pulse 2.4s infinite ease-in-out;
+    }
+
+    .logo-card {
+      position: relative;
+      width: 84px;
+      height: 84px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, #7C4DFF 0%, #512DA8 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 12px 32px rgba(124, 77, 255, 0.4);
+    }
+
+    .logo-card svg {
+      width: 44px;
+      height: 44px;
+      fill: #ffffff;
+    }
+
+    .app-name {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      background: linear-gradient(90deg, #FFFFFF, #D1C4E9);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+
+    .status-text {
+      font-size: 14px;
+      color: #9E9E9E;
+      margin-bottom: 28px;
+    }
+
+    .progress-bar-bg {
+      width: 200px;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .progress-bar-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 45%;
+      background: linear-gradient(90deg, #7C4DFF, #B388FF);
+      border-radius: 4px;
+      animation: indeterminate 1.6s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 0.35; }
+      50% { transform: scale(1.15); opacity: 0.65; }
+    }
+
+    @keyframes indeterminate {
+      0% { left: -45%; width: 45%; }
+      50% { left: 30%; width: 60%; }
+      100% { left: 105%; width: 45%; }
+    }
+
+    .fade-out {
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none;
+    }
+  </style>
 </head>
 <body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
+  <div id="loading-container">
+    <div class="logo-wrapper">
+      <div class="logo-glow"></div>
+      <div class="logo-card">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+        </svg>
+      </div>
+    </div>
+    <div class="app-name">NovaMusic</div>
+    <div class="status-text">Iniciando motor de audio y biblioteca...</div>
+    <div class="progress-bar-bg">
+      <div class="progress-bar-fill"></div>
+    </div>
+  </div>
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
+  <script>
+    function dismissSplashScreen() {
+      const splash = document.getElementById('loading-container');
+      if (splash && !splash.classList.contains('fade-out')) {
+        splash.classList.add('fade-out');
+        setTimeout(() => splash.remove(), 600);
+      }
+    }
+
+    // Dismiss when Flutter fires first-frame event
+    window.addEventListener('flutter-first-frame', dismissSplashScreen);
+
+    // Mutation observer as a secondary trigger when Flutter elements appear
+    const observer = new MutationObserver((mutations, obs) => {
+      const flutterView = document.querySelector('flutter-view') || document.querySelector('flt-glass-pane');
+      if (flutterView) {
+        setTimeout(dismissSplashScreen, 300);
+        obs.disconnect();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Fallback safety timeout (max 6 seconds)
+    setTimeout(dismissSplashScreen, 6000);
+  </script>
+
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
