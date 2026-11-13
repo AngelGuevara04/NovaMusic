@@ -44,6 +44,48 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
     });
   }
 
+  void _confirmOverwriteCloud(BuildContext context, AudioProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262626),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
+            SizedBox(width: 10),
+            Text('Sobrescribir Nube', style: TextStyle(color: Colors.white, fontSize: 18)),
+          ],
+        ),
+        content: const Text(
+          'Esta acción reemplazará toda tu biblioteca en la nube únicamente con las canciones limpias que tienes actualmente en este dispositivo.\n\nÚtil si tienes canciones que se subieron mal o duplicadas.',
+          style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF7C4DFF)),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final ok = await provider.overwriteCloudLibraryWithDeviceSongs();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(ok ? '¡Biblioteca de la nube actualizada desde cero con éxito!' : 'Error al conectar con la nube.'),
+                    backgroundColor: ok ? const Color(0xFF7C4DFF) : Colors.redAccent,
+                  ),
+                );
+              }
+            },
+            child: const Text('Sí, sobrescribir', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final audioProvider = Provider.of<AudioProvider>(context);
@@ -197,6 +239,49 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                     ),
                   ),
                 ],
+                const SizedBox(height: 12),
+                // Botones de sincronización y limpieza solicitados por el usuario
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFB388FF),
+                          side: const BorderSide(color: Color(0xFF7C4DFF)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                        ),
+                        icon: const Icon(Icons.cloud_upload_outlined, size: 16),
+                        label: const Text('Sobrescribir nube de 0', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                        onPressed: () => _confirmOverwriteCloud(context, audioProvider),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.tealAccent,
+                          side: const BorderSide(color: Colors.teal),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                        ),
+                        icon: const Icon(Icons.playlist_add, size: 16),
+                        label: const Text('Unir locales a la nube', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                        onPressed: () async {
+                          final ok = await audioProvider.mergeDeviceSongsIntoCloudLibrary();
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(ok ? 'Canciones locales añadidas a tu nube sin duplicados.' : 'Error al conectar con la nube.'),
+                                backgroundColor: ok ? const Color(0xFF7C4DFF) : Colors.redAccent,
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),

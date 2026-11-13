@@ -431,62 +431,138 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _showDeviceDialog(BuildContext context, AudioProvider provider) {
+    final otherDevices = provider.connectedDevices
+        .where((d) => d['id'] != provider.deviceId)
+        .toList();
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF262626),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
+        title: const Row(
           children: [
-            Icon(provider.currentDeviceIcon, color: Colors.greenAccent),
-            const SizedBox(width: 10),
-            const Text('Dispositivo Activo', style: TextStyle(color: Colors.white, fontSize: 18)),
+            Icon(Icons.speaker_group_outlined, color: Colors.greenAccent),
+            SizedBox(width: 10),
+            Text('Salida de Audio', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.3)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Dispositivo actual:',
+                style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
               ),
-              child: Row(
-                children: [
-                  const Icon(Icons.radio_button_checked, color: Colors.greenAccent, size: 18),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A1A),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.greenAccent.withOpacity(0.4)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(provider.currentDeviceIcon, color: Colors.greenAccent, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            provider.currentDeviceName,
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                          Text(
+                            provider.isPlaying ? 'Reproduciendo audio aquí' : 'En pausa',
+                            style: const TextStyle(color: Colors.greenAccent, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.check_circle, color: Colors.greenAccent, size: 20),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Otros dispositivos activos:',
+                style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              if (otherDevices.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E1E1E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Text(
+                    'Inicia sesión en tu computadora o en otro celular con tu usuario y contraseña para transferir la música entre ellos.',
+                    style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
+                  ),
+                )
+              else
+                ...otherDevices.map((dev) {
+                  final devName = dev['name'] ?? 'Dispositivo';
+                  final platform = dev['platform'] ?? 'device';
+                  final isComputer = platform == 'web' || platform == 'windows' || platform == 'desktop';
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E1E),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Row(
                       children: [
-                        Text(
-                          provider.currentDeviceName,
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                        Icon(isComputer ? Icons.computer : Icons.smartphone, color: const Color(0xFFB388FF), size: 22),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(devName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13)),
+                              const Text('En línea', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                            ],
+                          ),
                         ),
-                        Text(
-                          provider.isPlaying ? 'Reproduciendo música ahora' : 'En pausa',
-                          style: const TextStyle(color: Colors.greenAccent, fontSize: 12),
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            provider.switchAudioOutput(dev['id']);
+                            Navigator.pop(ctx);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Transfiriendo reproducción a $devName...'),
+                                backgroundColor: const Color(0xFF7C4DFF),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.play_arrow, size: 16, color: Colors.white),
+                          label: const Text('Pasar aquí', style: TextStyle(fontSize: 12, color: Colors.white)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF7C4DFF),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
                         ),
                       ],
                     ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            Text(
-              'Tu sesión está conectada a la cuenta @${provider.currentUsername ?? "Guevara"}.\nPuedes escuchar tus canciones y listas tanto en tu teléfono como en tu computadora de forma sincronizada.',
-              style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
-            ),
-          ],
+                  );
+                }),
+            ],
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Entendido', style: TextStyle(color: Colors.deepPurpleAccent)),
+            child: const Text('Cerrar', style: TextStyle(color: Colors.deepPurpleAccent)),
           ),
         ],
       ),

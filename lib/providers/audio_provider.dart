@@ -1,6 +1,7 @@
 import '../models/playlist_model.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -33,16 +34,23 @@ class AudioProvider with ChangeNotifier {
   Map<String, dynamic>? _activeCloudDevice;
   Map<String, dynamic>? get activeCloudDevice => _activeCloudDevice;
 
+  String? _deviceId;
+  String? get deviceId => _deviceId;
+  List<Map<String, dynamic>> _connectedDevices = [];
+  List<Map<String, dynamic>> get connectedDevices => _connectedDevices;
+  RealtimeChannel? _realtimeChannel;
+  Timer? _heartbeatTimer;
+
   String get currentDeviceName {
     if (kIsWeb) return 'Computadora (Web)';
-    if (Platform.isWindows) {
+    if (!kIsWeb && Platform.isWindows) {
       final host = Platform.localHostname;
       return host.isNotEmpty ? 'PC ($host)' : 'Computadora (Windows)';
     }
-    if (Platform.isAndroid) return 'Teléfono (Android)';
-    if (Platform.isIOS) return 'iPhone';
-    if (Platform.isMacOS) return 'Mac';
-    if (Platform.isLinux) return 'Linux';
+    if (!kIsWeb && Platform.isAndroid) return 'Teléfono (Android)';
+    if (!kIsWeb && Platform.isIOS) return 'iPhone';
+    if (!kIsWeb && Platform.isMacOS) return 'Mac';
+    if (!kIsWeb && Platform.isLinux) return 'Linux';
     return 'Este Dispositivo';
   }
 
@@ -98,7 +106,7 @@ class AudioProvider with ChangeNotifier {
   int get cloudOnlySongsCount => _visibleSongs.where((s) => isCloudSong(s)).length;
 
   bool isCloudSong(SongModel song) {
-    if (kIsWeb) return true;
+    if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) return true;
     if (song.getMap['is_cloud'] == true) return true;
     if (song.data.isEmpty) return true;
     try {
@@ -208,6 +216,314 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
+  Future<void> _initDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    _deviceId = prefs.getString('local_device_id');
+    if (_deviceId == null) {
+      final rand = Random().nextInt(9000) + 1000;
+      _deviceId = 'dev_${DateTime.now().millisecondsSinceEpoch}_$rand';
+      await prefs.setString('local_device_id', _deviceId!);
+    }
+  }
+
+  Future<void> registerDeviceInCloud() async {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return;
+    if (_deviceId == null) await _initDeviceId();
+
+    try {
+      final supabase = Supabase.instance.client;
+      final res = await supabase
+          .from('user_preferences')
+          .select('connected_devices')
+          .eq('username', _currentUsername!)
+          .maybeSingle();
+
+      List<dynamic> raw = res?['connected_devices'] ?? [];
+      final now = DateTime.now();
+
+      // Filtrar dispositivos vistos en los últimos 4 minutos
+      List<Map<String, dynamic>> activeList = [];
+      for (var item in raw) {
+        if (item is Map) {
+          final m = Map<String, dynamic>.from(item);
+          if (m['id'] != _deviceId) {
+            final lastSeen = DateTime.tryParse(m['last_seen'] ?? '');
+            if (lastSeen != null && now.difference(lastSeen).inMinutes < 4) {
+              activeList.add(m);
+            }
+          }
+        }
+      }
+
+      final platformStr = kIsWeb
+          ? 'web'
+          : (Platform.isWindows
+              ? 'windows'
+              : (Platform.isAndroid
+                  ? 'android'
+                  : (Platform.isIOS ? 'ios' : 'desktop')));
+
+      // Agregar este dispositivo
+      activeList.add({
+        'id': _deviceId,
+        'name': currentDeviceName,
+        'platform': platformStr,
+        'last_seen': now.toIso8601String(),
+        'is_playing': _isPlaying,
+        'song_title': currentSong?.title ?? '',
+      });
+
+      _connectedDevices = activeList;
+      notifyListeners();
+
+      await supabase.from('user_preferences').update({
+        'connected_devices': activeList,
+        'last_active': now.toIso8601String(),
+      }).eq('username', _currentUsername!);
+    } catch (_) {}
+  }
+
+  void _startHeartbeatTimer() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 40), (_) {
+      registerDeviceInCloud();
+    });
+  }
+
+  void _subscribeToRealtimeSync() {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return;
+    _realtimeChannel?.unsubscribe();
+
+    final supabase = Supabase.instance.client;
+    _realtimeChannel = supabase
+        .channel('public:user_preferences:${_currentUsername}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'user_preferences',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'username',
+            value: _currentUsername!,
+          ),
+          callback: (payload) {
+            final newRec = payload.newRecord;
+            if (newRec == null) return;
+
+            // 1. Sincronizar dispositivos conectados
+            if (newRec['connected_devices'] != null && newRec['connected_devices'] is List) {
+              _connectedDevices = (newRec['connected_devices'] as List)
+                  .map((e) => Map<String, dynamic>.from(e as Map))
+                  .toList();
+            }
+
+            // 2. Control de salida de audio remoto (tipo Spotify Connect)
+            if (newRec['playback_state'] != null && newRec['playback_state'] is Map) {
+              final pb = Map<String, dynamic>.from(newRec['playback_state'] as Map);
+              final targetId = pb['target_device_id'];
+              final action = pb['action'];
+
+              if (targetId == _deviceId) {
+                // Este dispositivo fue elegido como salida
+                if (action == 'play') {
+                  final songMap = pb['song'];
+                  final posMs = pb['position_ms'] ?? 0;
+                  if (songMap != null) {
+                    final targetSong = _allSongs.firstWhere(
+                      (s) => s.id.toString() == songMap['id']?.toString() || s.title == songMap['title'],
+                      orElse: () => SongModel(Map<String, dynamic>.from(songMap as Map)),
+                    );
+                    final songIdx = _visibleSongs.indexWhere((s) => s.id == targetSong.id);
+                    if (songIdx != -1) {
+                      playSong(songIdx).then((_) {
+                        _audioPlayer.seek(Duration(milliseconds: posMs));
+                      });
+                    }
+                  }
+                } else if (action == 'pause') {
+                  _audioPlayer.pause();
+                }
+              } else if (targetId != null && targetId != _deviceId) {
+                // Otro dispositivo está reproduciendo ahora: pausar reproducción local
+                if (_isPlaying) {
+                  _audioPlayer.pause();
+                }
+              }
+            }
+
+            notifyListeners();
+          },
+        )
+        .subscribe();
+  }
+
+  static String normalizeForDedup(String raw) {
+    return raw
+        .toLowerCase()
+        .replaceAll(RegExp(r'\[.*?\]|\(.*?\)', caseSensitive: false), '')
+        .replaceAll(RegExp(r'feat\..*|ft\..*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'official|video|audio|lyrics|en vivo|letra|remastered', caseSensitive: false), '')
+        .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
+        .replaceAll('á', 'a')
+        .replaceAll('é', 'e')
+        .replaceAll('í', 'i')
+        .replaceAll('ó', 'o')
+        .replaceAll('ú', 'u')
+        .replaceAll('ñ', 'n')
+        .trim();
+  }
+
+  Future<void> switchAudioOutput(String targetDeviceId) async {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return;
+    if (currentSong == null) return;
+
+    if (targetDeviceId == _deviceId) {
+      if (!_isPlaying) _audioPlayer.play();
+      return;
+    }
+
+    final targetName = _connectedDevices.firstWhere(
+      (d) => d['id'] == targetDeviceId,
+      orElse: () => {'name': 'Dispositivo Remoto'},
+    )['name'];
+
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('user_preferences').update({
+        'playback_state': {
+          'target_device_id': targetDeviceId,
+          'action': 'play',
+          'song': currentSong!.getMap,
+          'position_ms': _currentPosition.inMilliseconds,
+          'sender_device_id': _deviceId,
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        'active_device': {
+          'device_id': targetDeviceId,
+          'device_name': targetName,
+          'is_playing': true,
+          'song_title': currentSong?.title ?? '',
+          'updated_at': DateTime.now().toIso8601String(),
+        }
+      }).eq('username', _currentUsername!);
+
+      // Pausar salida local
+      _audioPlayer.pause();
+      notifyListeners();
+    } catch (e) {
+      print('Error switching audio output: $e');
+    }
+  }
+
+  /// Sobrescribir toda la biblioteca de la nube con las canciones limpias de este dispositivo
+  Future<bool> overwriteCloudLibraryWithDeviceSongs() async {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return false;
+    try {
+      final supabase = Supabase.instance.client;
+      final localOnly = _visibleSongs.where((s) => !isCloudSong(s)).toList();
+
+      final List<Map<String, dynamic>> newLibrary = localOnly.map((s) {
+        return {
+          'id': s.id,
+          'title': s.title,
+          'artist': s.artist ?? 'Artista desconocido',
+          'duration': s.duration ?? 0,
+          'url': s.data,
+          'youtube_id': s.getMap['youtube_id'] ?? '',
+          'is_cloud': true,
+          'added_at': DateTime.now().toIso8601String(),
+        };
+      }).toList();
+
+      await supabase.from('user_preferences').update({
+        'library_songs': newLibrary,
+        'last_active': DateTime.now().toIso8601String(),
+      }).eq('username', _currentUsername!);
+
+      _cloudLibrarySongs = newLibrary;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_library_songs', jsonEncode(newLibrary));
+
+      await fetchSongs();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('Error overwriting cloud library: $e');
+      return false;
+    }
+  }
+
+  /// Fusionar canciones de este dispositivo con las de la nube sin duplicados
+  Future<bool> mergeDeviceSongsIntoCloudLibrary() async {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return false;
+    try {
+      final supabase = Supabase.instance.client;
+      final existing = List<Map<String, dynamic>>.from(_cloudLibrarySongs);
+
+      final localOnly = _visibleSongs.where((s) => !isCloudSong(s)).toList();
+
+      for (var s in localOnly) {
+        final normTitle = normalizeForDedup(s.title);
+        final exists = existing.any((c) {
+          final cId = c['id']?.toString();
+          final cTitle = normalizeForDedup(c['title'] ?? '');
+          return cId == s.id.toString() || cTitle == normTitle;
+        });
+
+        if (!exists) {
+          existing.add({
+            'id': s.id,
+            'title': s.title,
+            'artist': s.artist ?? 'Artista desconocido',
+            'duration': s.duration ?? 0,
+            'url': s.data,
+            'youtube_id': s.getMap['youtube_id'] ?? '',
+            'is_cloud': true,
+            'added_at': DateTime.now().toIso8601String(),
+          });
+        }
+      }
+
+      await supabase.from('user_preferences').update({
+        'library_songs': existing,
+        'last_active': DateTime.now().toIso8601String(),
+      }).eq('username', _currentUsername!);
+
+      _cloudLibrarySongs = existing;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_library_songs', jsonEncode(existing));
+
+      await fetchSongs();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('Error merging cloud library: $e');
+      return false;
+    }
+  }
+
+  /// Limpiar toda la biblioteca en la nube
+  Future<bool> clearCloudLibrary() async {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return false;
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('user_preferences').update({
+        'library_songs': [],
+        'last_active': DateTime.now().toIso8601String(),
+      }).eq('username', _currentUsername!);
+
+      _cloudLibrarySongs = [];
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('cached_library_songs');
+
+      await fetchSongs();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   Future<void> updateActiveDeviceInCloud() async {
     final prefs = await SharedPreferences.getInstance();
     final username = _currentUsername ?? prefs.getString('current_username');
@@ -217,6 +533,7 @@ class AudioProvider with ChangeNotifier {
       final supabase = Supabase.instance.client;
       await supabase.from('user_preferences').update({
         'active_device': {
+          'device_id': _deviceId,
           'device_name': currentDeviceName,
           'is_playing': _isPlaying,
           'song_title': currentSong?.title ?? '',
@@ -266,6 +583,7 @@ class AudioProvider with ChangeNotifier {
 
     // Configurar sesión de audio profesional para manejar foco y segundo plano
     await _setupAudioSession();
+    await _initDeviceId();
 
     _currentUsername = prefs.getString('current_username');
     final cachedLib = prefs.getString('cached_library_songs');
@@ -420,22 +738,36 @@ class AudioProvider with ChangeNotifier {
           await prefs.setString('cached_playlists', jsonEncode(_playlists.map((p) => p.toJson()).toList()));
         }
 
-        // 6. Dispositivo activo
+        // 6. Dispositivo activo y conectados
         if (response['active_device'] != null && response['active_device'] is Map) {
           _activeCloudDevice = Map<String, dynamic>.from(response['active_device'] as Map);
         }
+        if (response['connected_devices'] != null && response['connected_devices'] is List) {
+          _connectedDevices = (response['connected_devices'] as List)
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .toList();
+        }
 
-        // 4. Actualizar última conexión
+        // Registrar este dispositivo e iniciar sincronización en tiempo real
+        await registerDeviceInCloud();
+        _startHeartbeatTimer();
+        _subscribeToRealtimeSync();
+
+        // 7. Actualizar última conexión
         try {
           await supabase.from('user_preferences').update({
             'last_active': DateTime.now().toIso8601String(),
           }).eq('username', username);
         } catch (_) {}
 
-        _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
-        _applySort();
-        _needsPlaylistRebuild = true;
-        notifyListeners();
+        if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
+          await fetchSongs();
+        } else {
+          _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
+          _applySort();
+          _needsPlaylistRebuild = true;
+          notifyListeners();
+        }
       }
     } catch (e) {
       print('Error loading from Supabase: $e');
@@ -520,7 +852,7 @@ class AudioProvider with ChangeNotifier {
   List<SongModel> get hiddenSongs => _allSongs.where((s) => _hiddenSongIds.contains(s.id)).toList();
 
   Future<void> fetchSongs() async {
-    if (kIsWeb) {
+    if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
       _allSongs = _cloudLibrarySongs.map((c) => SongModel({
         '_id': c['id'] is int ? c['id'] : int.tryParse(c['id'].toString()) ?? DateTime.now().millisecondsSinceEpoch,
         'title': c['title'] ?? 'Sin título',
@@ -590,22 +922,6 @@ class AudioProvider with ChangeNotifier {
     }
 
     // 3. PIPELINE DE DEDUPLICACIÓN ESTRICTA (¡Cero duplicados, cero canciones fantasma!)
-    String normalizeForDedup(String raw) {
-      return raw
-          .toLowerCase()
-          .replaceAll(RegExp(r'\[.*?\]|\(.*?\)', caseSensitive: false), '')
-          .replaceAll(RegExp(r'feat\..*|ft\..*', caseSensitive: false), '')
-          .replaceAll(RegExp(r'official|video|audio|lyrics|en vivo|letra|remastered', caseSensitive: false), '')
-          .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
-          .replaceAll('á', 'a')
-          .replaceAll('é', 'e')
-          .replaceAll('í', 'i')
-          .replaceAll('ó', 'o')
-          .replaceAll('ú', 'u')
-          .replaceAll('ñ', 'n')
-          .trim();
-    }
-
     final List<SongModel> verifiedSongs = [];
     final Set<String> seenPaths = {};
 

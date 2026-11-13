@@ -46,3 +46,5 @@ app.*.map.json
 .kotlin/
 Instaladores/
 *.apk
+NovaMusic.spec
+dist/
