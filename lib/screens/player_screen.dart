@@ -376,11 +376,119 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     );
                   },
                 ),
-                const SizedBox(height: 40),
+                const SizedBox(height: 16),
+                // Indicador de dispositivo activo
+                Consumer<AudioProvider>(
+                  builder: (context, audioProvider, child) {
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(20),
+                      onTap: () => _showDeviceDialog(context, audioProvider),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF202020),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: audioProvider.isPlaying
+                                ? Colors.greenAccent.withValues(alpha: 0.4)
+                                : Colors.white24,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              audioProvider.currentDeviceIcon,
+                              size: 15,
+                              color: audioProvider.isPlaying ? Colors.greenAccent : Colors.white70,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              audioProvider.isPlaying
+                                  ? 'Reproduciendo en: ${audioProvider.currentDeviceName}'
+                                  : 'Pausado en: ${audioProvider.currentDeviceName}',
+                              style: TextStyle(
+                                color: audioProvider.isPlaying ? Colors.greenAccent : Colors.white70,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            const Icon(Icons.info_outline, size: 13, color: Colors.white38),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 24),
               ],
             ),
           );
         },
+      ),
+    );
+  }
+
+  void _showDeviceDialog(BuildContext context, AudioProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262626),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Icon(provider.currentDeviceIcon, color: Colors.greenAccent),
+            const SizedBox(width: 10),
+            const Text('Dispositivo Activo', style: TextStyle(color: Colors.white, fontSize: 18)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.radio_button_checked, color: Colors.greenAccent, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          provider.currentDeviceName,
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                        Text(
+                          provider.isPlaying ? 'Reproduciendo música ahora' : 'En pausa',
+                          style: const TextStyle(color: Colors.greenAccent, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Tu sesión está conectada a la cuenta @${provider.currentUsername ?? "Guevara"}.\nPuedes escuchar tus canciones y listas tanto en tu teléfono como en tu computadora de forma sincronizada.',
+              style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Entendido', style: TextStyle(color: Colors.deepPurpleAccent)),
+          ),
+        ],
       ),
     );
   }

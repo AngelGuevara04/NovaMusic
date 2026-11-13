@@ -885,15 +885,24 @@ class MiniPlayer extends StatelessWidget {
                           fontSize: 14,
                         ),
                       ),
-                      Text(
-                        song.artist ?? "Artista desconocido",
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Color(0xFFCCCCCC),
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                        ),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          Icon(audioProvider.currentDeviceIcon, size: 11, color: Colors.greenAccent),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              '${song.artist ?? "Desconocido"} • ${audioProvider.currentDeviceName}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Color(0xFFCCCCCC),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),

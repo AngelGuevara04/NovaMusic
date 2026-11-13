@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
+import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -29,6 +30,28 @@ class AudioProvider with ChangeNotifier {
   List<Map<String, dynamic>> _cloudLibrarySongs = [];
   List<PlaylistModel> _playlists = [];
   List<PlaylistModel> get playlists => _playlists;
+  Map<String, dynamic>? _activeCloudDevice;
+  Map<String, dynamic>? get activeCloudDevice => _activeCloudDevice;
+
+  String get currentDeviceName {
+    if (kIsWeb) return 'Computadora (Web)';
+    if (Platform.isWindows) {
+      final host = Platform.localHostname;
+      return host.isNotEmpty ? 'PC ($host)' : 'Computadora (Windows)';
+    }
+    if (Platform.isAndroid) return 'Teléfono (Android)';
+    if (Platform.isIOS) return 'iPhone';
+    if (Platform.isMacOS) return 'Mac';
+    if (Platform.isLinux) return 'Linux';
+    return 'Este Dispositivo';
+  }
+
+  IconData get currentDeviceIcon {
+    if (kIsWeb || (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux))) {
+      return Icons.computer;
+    }
+    return Icons.smartphone;
+  }
   bool _isConnectingCloudStream = false;
   final YoutubeExplode _ytCloud = YoutubeExplode();
   
@@ -165,6 +188,12 @@ class AudioProvider with ChangeNotifier {
         'favorite_songs': _favoriteSongIds.map((e) => e.toString()).toList(),
         'library_songs': _cloudLibrarySongs,
         'playlists': _playlists.map((p) => p.toJson()).toList(),
+        'active_device': {
+          'device_name': currentDeviceName,
+          'is_playing': _isPlaying,
+          'song_title': currentSong?.title ?? '',
+          'updated_at': DateTime.now().toIso8601String(),
+        },
         'auto_delete': autoDelete,
         'last_active': DateTime.now().toIso8601String(),
       });
@@ -172,6 +201,25 @@ class AudioProvider with ChangeNotifier {
     } catch (e) {
       print('Error syncing all to Supabase: $e');
     }
+  }
+
+  Future<void> updateActiveDeviceInCloud() async {
+    final prefs = await SharedPreferences.getInstance();
+    final username = _currentUsername ?? prefs.getString('current_username');
+    if (username == null || username.isEmpty) return;
+
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('user_preferences').update({
+        'active_device': {
+          'device_name': currentDeviceName,
+          'is_playing': _isPlaying,
+          'song_title': currentSong?.title ?? '',
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        'last_active': DateTime.now().toIso8601String(),
+      }).eq('username', username);
+    } catch (_) {}
   }
   
   int? get currentIndex => _currentIndex;
@@ -364,6 +412,11 @@ class AudioProvider with ChangeNotifier {
           List<dynamic> pls = response['playlists'];
           _playlists = pls.map((e) => PlaylistModel.fromJson(Map<String, dynamic>.from(e as Map))).toList();
           await prefs.setString('cached_playlists', jsonEncode(_playlists.map((p) => p.toJson()).toList()));
+        }
+
+        // 6. Dispositivo activo
+        if (response['active_device'] != null && response['active_device'] is Map) {
+          _activeCloudDevice = Map<String, dynamic>.from(response['active_device'] as Map);
         }
 
         // 4. Actualizar última conexión
@@ -773,6 +826,7 @@ class AudioProvider with ChangeNotifier {
       _isPlaying = true;
       notifyListeners();
       await _audioPlayer.play();
+      updateActiveDeviceInCloud();
     } catch (e) {
       _isConnectingCloudStream = false;
       notifyListeners();
@@ -806,6 +860,7 @@ class AudioProvider with ChangeNotifier {
         await session.setActive(true);
       }
       await _audioPlayer.play();
+      updateActiveDeviceInCloud();
     } catch (e) {
       print("Error playing song: $e");
     }
@@ -824,6 +879,7 @@ class AudioProvider with ChangeNotifier {
     } else {
       await _audioPlayer.play();
     }
+    updateActiveDeviceInCloud();
   }
 
   Future<void> nextSong() async {

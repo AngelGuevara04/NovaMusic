@@ -289,6 +289,42 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                   ),
                 ),
 
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+                child: Row(
+                  children: [
+                    FilterChip(
+                      avatar: Icon(
+                        downloader.highQualityFilter ? Icons.verified : Icons.tune,
+                        size: 16,
+                        color: downloader.highQualityFilter ? Colors.amberAccent : Colors.white70,
+                      ),
+                      label: const Text('Filtro: Calidad Estudio / Oficial'),
+                      selected: downloader.highQualityFilter,
+                      selectedColor: Colors.deepPurpleAccent.withValues(alpha: 0.3),
+                      checkmarkColor: Colors.amberAccent,
+                      labelStyle: TextStyle(
+                        color: downloader.highQualityFilter ? Colors.white : Colors.white70,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                      onSelected: (val) {
+                        downloader.setHighQualityFilter(val);
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        downloader.highQualityFilter ? 'Prioriza audio oficial sin saturación' : 'Mostrando todo',
+                        style: const TextStyle(color: Colors.white38, fontSize: 11),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
               const Divider(color: Colors.white10),
 
               // Lista de resultados o recomendaciones con Vista Previa
@@ -331,11 +367,45 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
                                     fontSize: 14,
                                   ),
                                 ),
-                                subtitle: Text(
-                                  video.author,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 12),
+                                subtitle: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        video.author,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 12),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    if (DownloaderProvider.isStudioOfficial(video))
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.deepPurpleAccent.withValues(alpha: 0.25),
+                                          borderRadius: BorderRadius.circular(4),
+                                          border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.5)),
+                                        ),
+                                        child: const Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.verified, size: 10, color: Colors.amberAccent),
+                                            SizedBox(width: 3),
+                                            Text('Estudio', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                          ],
+                                        ),
+                                      )
+                                    else if (DownloaderProvider.isLiveOrLowQuality(video))
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.orangeAccent.withValues(alpha: 0.2),
+                                          borderRadius: BorderRadius.circular(4),
+                                          border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.5)),
+                                        ),
+                                        child: const Text('En vivo', style: TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                                      ),
+                                  ],
                                 ),
                                 trailing: IconButton(
                                   tooltip: 'Descargar canción',

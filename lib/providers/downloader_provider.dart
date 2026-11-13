@@ -31,9 +31,56 @@ class DownloaderProvider extends ChangeNotifier {
   
   List<Video> _searchResults = [];
   bool _isSearching = false;
+  bool _highQualityFilter = true;
+  String _lastQuery = '';
 
   List<Video> get searchResults => _searchResults;
   bool get isSearching => _isSearching;
+  bool get highQualityFilter => _highQualityFilter;
+
+  void setHighQualityFilter(bool value) {
+    _highQualityFilter = value;
+    notifyListeners();
+    if (_lastQuery.isNotEmpty) {
+      searchYoutube(_lastQuery);
+    }
+  }
+
+  static bool isLiveOrLowQuality(Video video) {
+    final title = video.title.toLowerCase();
+    return title.contains('en vivo') ||
+        title.contains('live') ||
+        title.contains('concierto') ||
+        title.contains('festival') ||
+        title.contains('recital') ||
+        title.contains('acustico') ||
+        title.contains('acústico') ||
+        title.contains('fancam') ||
+        title.contains('grabado de') ||
+        title.contains('bootleg') ||
+        title.contains('8d audio') ||
+        title.contains('bass boost') ||
+        title.contains('slowed');
+  }
+
+  static bool isStudioOfficial(Video video) {
+    final title = video.title.toLowerCase();
+    final author = video.author.toLowerCase();
+    return author.contains('- topic') ||
+        author.contains('vevo') ||
+        author.contains('official') ||
+        author.contains('records') ||
+        author.contains('music') ||
+        author.contains('sony') ||
+        author.contains('warner') ||
+        author.contains('universal') ||
+        title.contains('audio oficial') ||
+        title.contains('official audio') ||
+        title.contains('remastered') ||
+        title.contains('version del album') ||
+        title.contains('album version') ||
+        title.contains('(audio)');
+  }
 
   String? _currentRecommendationArtist;
   String? get currentRecommendationArtist => _currentRecommendationArtist;
@@ -127,12 +174,29 @@ class DownloaderProvider extends ChangeNotifier {
 
   Future<void> searchYoutube(String query) async {
     if (query.isEmpty) return;
+    _lastQuery = query;
     _isSearching = true;
     notifyListeners();
 
     try {
-      final results = await _yt.search.search(query);
-      _searchResults = results.toList();
+      final results = (await _yt.search.search(query)).toList();
+      if (_highQualityFilter) {
+        // Ordenar y priorizar calidad de estudio / oficial sobre grabaciones en vivo
+        results.sort((a, b) {
+          final aIsStudio = isStudioOfficial(a);
+          final bIsStudio = isStudioOfficial(b);
+          if (aIsStudio && !bIsStudio) return -1;
+          if (!aIsStudio && bIsStudio) return 1;
+
+          final aIsLive = isLiveOrLowQuality(a);
+          final bIsLive = isLiveOrLowQuality(b);
+          if (!aIsLive && bIsLive) return -1;
+          if (aIsLive && !bIsLive) return 1;
+
+          return 0;
+        });
+      }
+      _searchResults = results;
     } catch (e) {
       _searchResults = [];
     }
@@ -293,11 +357,18 @@ class DownloaderProvider extends ChangeNotifier {
     _showProgressNotification(task, 0, "Preparando archivo...");
 
     var manifest = await _yt.videos.streamsClient.getManifest(task.url);
-    StreamInfo streamInfo = manifest.muxed.withHighestBitrate();
+    StreamInfo? streamInfo;
+    if (manifest.audioOnly.isNotEmpty) {
+      streamInfo = manifest.audioOnly.withHighestBitrate();
+    } else if (manifest.muxed.isNotEmpty) {
+      streamInfo = manifest.muxed.withHighestBitrate();
+    }
+    if (streamInfo == null) throw Exception("No se encontró stream de audio compatible");
 
     Directory tempDir = await getTemporaryDirectory();
     String safeTitle = video.title.replaceAll(RegExp(r'[<>:"/\\|?*]'), '').replaceAll(' ', '_');
-    File tempVideoFile = File('${tempDir.path}/${task.id}.mp4');
+    final ext = streamInfo.container.name.toLowerCase();
+    File tempVideoFile = File('${tempDir.path}/${task.id}.$ext');
     
     // Auto-etiquetado
     String author = video.author;
@@ -361,18 +432,32 @@ class DownloaderProvider extends ChangeNotifier {
     File tempAudioFile = File('${tempDir.path}/${task.id}.mp3');
     if (await tempAudioFile.exists()) await tempAudioFile.delete();
 
-    String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse"';
+    // Normalización de volumen profesional EBU R128 (-14 LUFS, pico máximo -1.5 dB)
+    // para evitar audios alejados o saturados, más eliminación de silencios iniciales y finales.
+    String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,loudnorm=I=-14:TP=-1.5:LRA=11"';
     String metadata = '-metadata title="$songTitle" -metadata artist="$author"';
     
     String command;
     if (hasThumbnail) {
-      command = '-y -i "${tempVideoFile.path}" -i "${tempThumbFile.path}" -map 0:a -map 1:v $afFilter -b:a 192k -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${tempAudioFile.path}"';
+      command = '-y -i "${tempVideoFile.path}" -i "${tempThumbFile.path}" -map 0:a -map 1:v $afFilter -b:a 320k -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${tempAudioFile.path}"';
     } else {
-      command = '-y -i "${tempVideoFile.path}" -vn $afFilter -b:a 192k $metadata "${tempAudioFile.path}"';
+      command = '-y -i "${tempVideoFile.path}" -vn $afFilter -b:a 320k $metadata "${tempAudioFile.path}"';
     }
     
     var session = await FFmpegKit.execute(command);
     var returnCode = await session.getReturnCode();
+
+    if (!ReturnCode.isSuccess(returnCode)) {
+      // Fallback a filtro estándar si loudnorm dio error en algún contenedor
+      final fallbackFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse"';
+      if (hasThumbnail) {
+        command = '-y -i "${tempVideoFile.path}" -i "${tempThumbFile.path}" -map 0:a -map 1:v $fallbackFilter -b:a 320k -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${tempAudioFile.path}"';
+      } else {
+        command = '-y -i "${tempVideoFile.path}" -vn $fallbackFilter -b:a 320k $metadata "${tempAudioFile.path}"';
+      }
+      session = await FFmpegKit.execute(command);
+      returnCode = await session.getReturnCode();
+    }
 
     if (ReturnCode.isSuccess(returnCode)) {
       await _autoSaveToDownloads(task, tempAudioFile.path, '$safeTitle.mp3', onSuccess);
