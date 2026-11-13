@@ -1,8 +1,8 @@
+import 'playlists_screen.dart';
 import 'cloud_backup_screen.dart';
 import '../widgets/suggestion_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:on_audio_query/on_audio_query.dart';
 import '../providers/audio_provider.dart';
 import '../widgets/song_tile.dart';
 import 'player_screen.dart';
@@ -487,7 +487,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 color: const Color(0xFF262626),
                 onSelected: (String result) async {
-                  if (result == 'sleep_timer') {
+                  if (result == 'playlists') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const PlaylistsScreen()),
+                    );
+                  } else if (result == 'sleep_timer') {
                     _showSleepTimerDialog(context, provider);
                   } else if (result == 'equalizer') {
                     Navigator.push(
@@ -518,6 +523,16 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
                 },
                 itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                  const PopupMenuItem<String>(
+                    value: 'playlists',
+                    child: Row(
+                      children: [
+                        Icon(Icons.queue_music, color: Colors.deepPurpleAccent, size: 20),
+                        SizedBox(width: 12),
+                        Text('Listas de reproducción', style: TextStyle(color: Colors.white, fontSize: 14)),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem<String>(
                     value: 'sleep_timer',
                     child: Row(
@@ -726,6 +741,20 @@ class _HomeScreenState extends State<HomeScreen> {
                       backgroundColor: const Color(0xFF242424),
                       side: BorderSide.none,
                       onSelected: (_) => audioProvider.setShowOnlyFavorites(true),
+                    ),
+                    const SizedBox(width: 8),
+                    ActionChip(
+                      avatar: const Icon(Icons.queue_music, color: Colors.deepPurpleAccent, size: 16),
+                      label: Text('Listas (${audioProvider.playlists.length})'),
+                      backgroundColor: const Color(0xFF242424),
+                      side: BorderSide.none,
+                      labelStyle: const TextStyle(color: Colors.white, fontSize: 12),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const PlaylistsScreen()),
+                        );
+                      },
                     ),
                     const Spacer(),
                     IconButton(

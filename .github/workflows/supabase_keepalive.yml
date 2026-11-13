@@ -1,0 +1,27 @@
+name: Supabase Keep-Alive & Auto-Wakeup
+
+on:
+  schedule:
+    # Se ejecuta cada 3 días a las 04:00 UTC (evita la suspensión por inactividad de 7 días de Supabase)
+    - cron: '0 4 */3 * *'
+  workflow_dispatch: # Permite ejecución manual desde GitHub
+
+jobs:
+  keep-alive:
+    name: Ping Supabase Database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enviar señal Keep-Alive a Supabase
+        run: |
+          echo "Enviando ping de actividad a la base de datos de NovaMusic en Supabase..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://pqvlwcqfjqrukgvwfhnh.supabase.co/rest/v1/user_preferences?select=username&limit=1" \
+            -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBxdmx3Y3FmanFydWtndndmaG5oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MjQ5MzYsImV4cCI6MjA5ODUwMDkzNn0.F1AYU6R5ri3DnZEdfsHA9dTRbZXEpNdjalZWd5nfWp8" \
+            -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBxdmx3Y3FmanFydWtndndmaG5oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MjQ5MzYsImV4cCI6MjA5ODUwMDkzNn0.F1AYU6R5ri3DnZEdfsHA9dTRbZXEpNdjalZWd5nfWp8")
+          
+          echo "Código HTTP recibido: $HTTP_CODE"
+          if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 206 ]; then
+            echo "¡Éxito! Base de datos de Supabase activa y con temporizador de suspensión reiniciado."
+          else
+            echo "Aviso: Respuesta HTTP $HTTP_CODE. Verificando estado."
+          fi

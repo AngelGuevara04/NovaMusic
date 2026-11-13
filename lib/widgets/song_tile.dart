@@ -1,3 +1,4 @@
+import 'add_to_playlist_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:provider/provider.dart';
@@ -284,6 +285,14 @@ class SongTile extends StatelessWidget {
                     ),
                     tooltip: audioProvider.isFavorite(song.id) ? 'Quitar de favoritas' : 'Marcar como favorita',
                     onPressed: () => audioProvider.toggleFavorite(song),
+                  ),
+                  IconButton(
+                    splashRadius: 20,
+                    padding: const EdgeInsets.only(left: 6),
+                    constraints: const BoxConstraints(),
+                    icon: const Icon(Icons.playlist_add, color: Colors.white60, size: 22),
+                    tooltip: 'Añadir a lista de reproducción',
+                    onPressed: () => showAddToPlaylistDialog(context, song),
                   ),
                 ],
               ),

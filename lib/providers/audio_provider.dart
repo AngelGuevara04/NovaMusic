@@ -1,3 +1,4 @@
+import '../models/playlist_model.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
@@ -8,7 +9,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../services/youtube_audio_source.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:audio_session/audio_session.dart';
-import 'package:on_audio_query/on_audio_query.dart';
+import 'package:on_audio_query/on_audio_query.dart' hide PlaylistModel;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -26,6 +27,8 @@ class AudioProvider with ChangeNotifier {
   String? _currentUsername;
   bool _showOnlyFavorites = false;
   List<Map<String, dynamic>> _cloudLibrarySongs = [];
+  List<PlaylistModel> _playlists = [];
+  List<PlaylistModel> get playlists => _playlists;
   bool _isConnectingCloudStream = false;
   final YoutubeExplode _ytCloud = YoutubeExplode();
   
@@ -161,6 +164,7 @@ class AudioProvider with ChangeNotifier {
         'hidden_songs': _hiddenSongIds.map((e) => e.toString()).toList(),
         'favorite_songs': _favoriteSongIds.map((e) => e.toString()).toList(),
         'library_songs': _cloudLibrarySongs,
+        'playlists': _playlists.map((p) => p.toJson()).toList(),
         'auto_delete': autoDelete,
         'last_active': DateTime.now().toIso8601String(),
       });
@@ -220,6 +224,13 @@ class AudioProvider with ChangeNotifier {
     }
     await _loadHiddenSongs();
     await _loadFavoriteSongs();
+    final cachedPlaylists = prefs.getString('cached_playlists');
+    if (cachedPlaylists != null && cachedPlaylists.isNotEmpty) {
+      try {
+        final List<dynamic> parsed = jsonDecode(cachedPlaylists);
+        _playlists = parsed.map((e) => PlaylistModel.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+      } catch (_) {}
+    }
     _listenToPlayerEvents();
     await checkAndRequestPermissions();
     
@@ -230,39 +241,44 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> _setupAudioSession() async {
-    final session = await AudioSession.instance;
-    await session.configure(const AudioSessionConfiguration.music());
+    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) return;
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration.music());
 
-    session.interruptionEventStream.listen((event) {
-      if (event.begin) {
-        switch (event.type) {
-          case AudioInterruptionType.duck:
-            _audioPlayer.setVolume(0.5);
-            break;
-          case AudioInterruptionType.pause:
-            _audioPlayer.pause();
-            break;
-          case AudioInterruptionType.unknown:
-            // Do not pause on unknown events (e.g. minimizing on MagicOS/Android 14)
-            break;
+      session.interruptionEventStream.listen((event) {
+        if (event.begin) {
+          switch (event.type) {
+            case AudioInterruptionType.duck:
+              _audioPlayer.setVolume(0.5);
+              break;
+            case AudioInterruptionType.pause:
+              _audioPlayer.pause();
+              break;
+            case AudioInterruptionType.unknown:
+              // Do not pause on unknown events (e.g. minimizing on MagicOS/Android 14)
+              break;
+          }
+        } else {
+          switch (event.type) {
+            case AudioInterruptionType.duck:
+              _audioPlayer.setVolume(1.0);
+              break;
+            case AudioInterruptionType.pause:
+              _audioPlayer.play();
+              break;
+            case AudioInterruptionType.unknown:
+              break;
+          }
         }
-      } else {
-        switch (event.type) {
-          case AudioInterruptionType.duck:
-            _audioPlayer.setVolume(1.0);
-            break;
-          case AudioInterruptionType.pause:
-            _audioPlayer.play();
-            break;
-          case AudioInterruptionType.unknown:
-            break;
-        }
-      }
-    });
+      });
 
-    session.becomingNoisyEventStream.listen((_) {
-      _audioPlayer.pause();
-    });
+      session.becomingNoisyEventStream.listen((_) {
+        _audioPlayer.pause();
+      });
+    } catch (e) {
+      print('AudioSession setup skipped: $e');
+    }
   }
 
   void _listenToPlayerEvents() {
@@ -341,6 +357,13 @@ class AudioProvider with ChangeNotifier {
           List<dynamic> lib = response['library_songs'];
           _cloudLibrarySongs = lib.map((e) => Map<String, dynamic>.from(e as Map)).toList();
           await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
+        }
+
+        // 5. Listas de reproducción sincronizadas
+        if (response['playlists'] != null) {
+          List<dynamic> pls = response['playlists'];
+          _playlists = pls.map((e) => PlaylistModel.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+          await prefs.setString('cached_playlists', jsonEncode(_playlists.map((p) => p.toJson()).toList()));
         }
 
         // 4. Actualizar última conexión
@@ -447,6 +470,16 @@ class AudioProvider with ChangeNotifier {
       '/storage/emulated/0/Music/NovaMusic',
       '/storage/emulated/0/Download/NovaMusic',
     ];
+
+    if (!Platform.isAndroid) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      if (userProfile != null) {
+        candidateDirs.add('$userProfile\\Music');
+        candidateDirs.add('$userProfile\\Music\\NovaMusic');
+        candidateDirs.add('$userProfile\\Downloads');
+        candidateDirs.add('$userProfile\\Downloads\\NovaMusic');
+      }
+    }
 
     try {
       final extMusic = await getExternalStorageDirectories(type: StorageDirectory.music);
@@ -768,8 +801,10 @@ class AudioProvider with ChangeNotifier {
     
     _currentIndex = index;
     try {
-      final session = await AudioSession.instance;
-      await session.setActive(true);
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        final session = await AudioSession.instance;
+        await session.setActive(true);
+      }
       await _audioPlayer.play();
     } catch (e) {
       print("Error playing song: $e");
@@ -778,11 +813,15 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> playPause() async {
-    final session = await AudioSession.instance;
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      try {
+        final session = await AudioSession.instance;
+        await session.setActive(true);
+      } catch (_) {}
+    }
     if (_audioPlayer.playing) {
       await _audioPlayer.pause();
     } else {
-      await session.setActive(true);
       await _audioPlayer.play();
     }
   }
@@ -866,8 +905,10 @@ class AudioProvider with ChangeNotifier {
         await _setupAudioSource(initialIndex: nextIndex, initialPosition: Duration.zero);
         if (wasPlaying) {
           try {
-            final session = await AudioSession.instance;
-            await session.setActive(true);
+            if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+              final session = await AudioSession.instance;
+              await session.setActive(true);
+            }
             await _audioPlayer.play();
           } catch (e) {
             print("Error playing next song after deletion: $e");
@@ -936,6 +977,105 @@ class AudioProvider with ChangeNotifier {
     
     _needsPlaylistRebuild = true;
     notifyListeners();
+  }
+
+  // ---- Playlist Management & Cloud Sync ----
+  Future<void> _savePlaylists() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('cached_playlists', jsonEncode(_playlists.map((p) => p.toJson()).toList()));
+  }
+
+  Future<PlaylistModel> createPlaylist(String name) async {
+    final newPlaylist = PlaylistModel(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: name,
+      createdAt: DateTime.now().toIso8601String(),
+      songs: [],
+    );
+    _playlists.add(newPlaylist);
+    await _savePlaylists();
+    await syncPreferencesToCloud();
+    notifyListeners();
+    return newPlaylist;
+  }
+
+  Future<void> renamePlaylist(String id, String newName) async {
+    final idx = _playlists.indexWhere((p) => p.id == id);
+    if (idx != -1) {
+      _playlists[idx].name = newName;
+      await _savePlaylists();
+      await syncPreferencesToCloud();
+      notifyListeners();
+    }
+  }
+
+  Future<void> deletePlaylist(String id) async {
+    _playlists.removeWhere((p) => p.id == id);
+    await _savePlaylists();
+    await syncPreferencesToCloud();
+    notifyListeners();
+  }
+
+  Future<void> addSongToPlaylist(String playlistId, SongModel song) async {
+    final idx = _playlists.indexWhere((p) => p.id == playlistId);
+    if (idx != -1) {
+      final exists = _playlists[idx].songs.any((s) => s.title.toLowerCase().trim() == song.title.toLowerCase().trim());
+      if (!exists) {
+        final ytId = song.getMap['youtube_id']?.toString() ?? '';
+        final url = song.getMap['url']?.toString() ?? '';
+        _playlists[idx].songs.add(PlaylistSong(
+          id: song.id,
+          title: song.title,
+          artist: song.artist ?? 'Artista desconocido',
+          duration: song.duration ?? 0,
+          youtubeId: ytId,
+          url: url,
+          addedAt: DateTime.now().toIso8601String(),
+        ));
+        await _savePlaylists();
+        await syncPreferencesToCloud();
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> removeSongFromPlaylist(String playlistId, String songTitle) async {
+    final idx = _playlists.indexWhere((p) => p.id == playlistId);
+    if (idx != -1) {
+      _playlists[idx].songs.removeWhere((s) => s.title == songTitle);
+      await _savePlaylists();
+      await syncPreferencesToCloud();
+      notifyListeners();
+    }
+  }
+
+  Future<void> playPlaylist(PlaylistModel playlist, {int initialIndex = 0}) async {
+    if (playlist.songs.isEmpty) return;
+    
+    List<SongModel> playlistSongs = [];
+    for (var ps in playlist.songs) {
+      final localMatch = _allSongs.firstWhere(
+        (s) => s.title.toLowerCase().trim() == ps.title.toLowerCase().trim() && !isCloudSong(s),
+        orElse: () => SongModel({
+          '_id': ps.id,
+          'title': ps.title,
+          'artist': ps.artist,
+          'duration': ps.duration,
+          '_data': ps.url,
+          'is_cloud': true,
+          'youtube_id': ps.youtubeId,
+        }),
+      );
+      playlistSongs.add(localMatch);
+    }
+    
+    _visibleSongs = playlistSongs;
+    _needsPlaylistRebuild = true;
+    notifyListeners();
+    
+    if (initialIndex >= 0 && initialIndex < _visibleSongs.length) {
+      await playSong(initialIndex);
+    }
   }
 
   // ---- Sleep Timer ----
