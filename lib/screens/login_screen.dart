@@ -1,9 +1,8 @@
-import 'dart:convert';
-import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
 import '../providers/audio_provider.dart';
+import '../widgets/password_dialogs.dart';
 import 'home_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -18,20 +17,18 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _userController = TextEditingController();
   final TextEditingController _passController = TextEditingController();
   final TextEditingController _confirmPassController = TextEditingController();
+  final TextEditingController _recoveryPinController = TextEditingController();
 
   bool _isRegisterMode = false;
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   bool _isLoading = false;
 
-  String _hashPassword(String password) {
-    return sha256.convert(utf8.encode(password.trim())).toString();
-  }
-
   Future<void> _submit() async {
     final username = _userController.text.trim();
     final password = _passController.text.trim();
     final confirmPass = _confirmPassController.text.trim();
+    final recoveryPin = _recoveryPinController.text.trim();
 
     if (username.isEmpty) {
       _showSnack('Por favor ingresa un nombre de usuario', isError: true);
@@ -43,19 +40,32 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
+    if (username.contains(' ')) {
+      _showSnack('El nombre de usuario no debe contener espacios', isError: true);
+      return;
+    }
+
     if (password.isEmpty) {
-      _showSnack('Por favor ingresa una contraseña', isError: true);
+      _showSnack('Por favor ingresa tu contraseña', isError: true);
       return;
     }
 
-    if (password.length < 4) {
-      _showSnack('La contraseña debe tener al menos 4 caracteres', isError: true);
-      return;
-    }
+    if (_isRegisterMode) {
+      final passError = PasswordValidator.getErrorMessage(password);
+      if (passError != null) {
+        _showSnack(passError, isError: true);
+        return;
+      }
 
-    if (_isRegisterMode && password != confirmPass) {
-      _showSnack('Las contraseñas no coinciden', isError: true);
-      return;
+      if (password != confirmPass) {
+        _showSnack('Las contraseñas no coinciden', isError: true);
+        return;
+      }
+
+      if (recoveryPin.isNotEmpty && !RegExp(r'^\d{4}$').hasMatch(recoveryPin)) {
+        _showSnack('El PIN de recuperación debe ser de 4 dígitos numéricos', isError: true);
+        return;
+      }
     }
 
     setState(() => _isLoading = true);
@@ -76,8 +86,8 @@ class _LoginScreenState extends State<LoginScreen> {
           return;
         }
 
-        final hashed = _hashPassword(password);
-        await supabase.from('user_preferences').insert({
+        final hashed = PasswordValidator.hash(password);
+        final insertMap = <String, dynamic>{
           'username': username,
           'password_hash': hashed,
           'hidden_songs': [],
@@ -86,9 +96,14 @@ class _LoginScreenState extends State<LoginScreen> {
           'playlists': [],
           'auto_delete': false,
           'last_active': DateTime.now().toIso8601String(),
-        });
+        };
+        if (recoveryPin.isNotEmpty) {
+          insertMap['recovery_pin_hash'] = PasswordValidator.hash(recoveryPin);
+        }
 
-        _showSnack('¡Cuenta creada con éxito! Bienvenido, $username');
+        await supabase.from('user_preferences').insert(insertMap);
+
+        _showSnack('¡Cuenta creada con éxito! Bienvenido, @$username');
       } else {
         // Modo Iniciar Sesión
         if (existing == null) {
@@ -98,16 +113,22 @@ class _LoginScreenState extends State<LoginScreen> {
         }
 
         final storedHash = existing['password_hash'] as String?;
-        final enteredHash = _hashPassword(password);
+        final enteredHash = PasswordValidator.hash(password);
 
         if (storedHash != null && storedHash.isNotEmpty) {
           if (storedHash != enteredHash) {
-            _showSnack('Contraseña incorrecta. Inténtalo de nuevo.', isError: true);
+            _showSnack('Contraseña incorrecta. Si la olvidaste, toca "¿Olvidaste tu contraseña?".', isError: true);
             setState(() => _isLoading = false);
             return;
           }
         } else {
-          // Usuario anterior sin contraseña: asignar la ingresada para proteger su cuenta
+          // Usuario anterior sin contraseña: validar que cumpla el formato antes de asignarla
+          final passError = PasswordValidator.getErrorMessage(password);
+          if (passError != null) {
+            _showSnack('Para proteger tu cuenta existente: $passError', isError: true);
+            setState(() => _isLoading = false);
+            return;
+          }
           await supabase.from('user_preferences').update({
             'password_hash': enteredHash,
           }).eq('username', username);
@@ -161,6 +182,7 @@ class _LoginScreenState extends State<LoginScreen> {
     _userController.dispose();
     _passController.dispose();
     _confirmPassController.dispose();
+    _recoveryPinController.dispose();
     super.dispose();
   }
 
@@ -261,12 +283,12 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 20),
 
-                // Campo Usuario
+                // Campo Usuario (Genérico)
                 TextField(
                   controller: _userController,
                   decoration: InputDecoration(
                     labelText: 'Usuario',
-                    hintText: 'Ej. Guevara',
+                    hintText: 'Ingresa tu nombre de usuario',
                     prefixIcon: const Icon(Icons.person_outline, color: Color(0xFFB388FF)),
                     filled: true,
                     fillColor: const Color(0xFF1E1E1E),
@@ -279,8 +301,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 TextField(
                   controller: _passController,
                   obscureText: _obscurePassword,
+                  onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
                     labelText: 'Contraseña',
+                    hintText: 'Mín. 6 caracteres, letras y números',
                     prefixIcon: const Icon(Icons.lock_outline, color: Color(0xFFB388FF)),
                     suffixIcon: IconButton(
                       icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility, color: Colors.white54),
@@ -292,19 +316,75 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
 
-                // Campo Confirmar Contraseña (Solo en registro)
+                // En modo Iniciar Sesión: botón de "¿Olvidaste tu contraseña?" y nota de formato
+                if (!_isRegisterMode)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Flexible(
+                          child: Text(
+                            'Formato: mín. 6 caracteres (letras y números)',
+                            style: TextStyle(color: Colors.white38, fontSize: 11),
+                          ),
+                        ),
+                        TextButton(
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          onPressed: _isLoading
+                              ? null
+                              : () => showForgotPasswordDialog(
+                                    context,
+                                    initialUsername: _userController.text.trim(),
+                                  ),
+                          child: const Text(
+                            '¿Olvidaste tu contraseña?',
+                            style: TextStyle(
+                              color: Color(0xFFB388FF),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                // En modo Registro (o si escribe contraseña): checklist en vivo + confirmar + PIN de recuperación
                 if (_isRegisterMode) ...[
+                  const SizedBox(height: 10),
+                  PasswordRequirementsChecklist(password: _passController.text),
                   const SizedBox(height: 14),
                   TextField(
                     controller: _confirmPassController,
                     obscureText: _obscureConfirm,
                     decoration: InputDecoration(
                       labelText: 'Confirmar Contraseña',
+                      hintText: 'Repite tu contraseña',
                       prefixIcon: const Icon(Icons.lock_reset, color: Color(0xFFB388FF)),
                       suffixIcon: IconButton(
                         icon: Icon(_obscureConfirm ? Icons.visibility_off : Icons.visibility, color: Colors.white54),
                         onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
                       ),
+                      filled: true,
+                      fillColor: const Color(0xFF1E1E1E),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _recoveryPinController,
+                    keyboardType: TextInputType.number,
+                    maxLength: 4,
+                    decoration: InputDecoration(
+                      counterText: '',
+                      labelText: 'PIN de Recuperación de 4 dígitos (Opcional)',
+                      hintText: 'Para recuperar tu cuenta si olvidas la clave',
+                      prefixIcon: const Icon(Icons.pin_outlined, color: Colors.cyanAccent),
                       filled: true,
                       fillColor: const Color(0xFF1E1E1E),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),

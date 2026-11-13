@@ -1,10 +1,12 @@
 import '../widgets/suggestion_dialog.dart';
+import '../widgets/password_dialogs.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/updater_service.dart';
 import 'hidden_songs_screen.dart';
 import 'equalizer_screen.dart';
+import 'login_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -16,6 +18,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _autoDelete = false;
   bool _isLoading = true;
+  String _currentUsername = '';
 
   // Updater state
   bool _isCheckingUpdate = false;
@@ -35,6 +38,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _autoDelete = prefs.getBool('auto_delete_from_device') ?? false;
+      _currentUsername = prefs.getString('current_username') ?? '';
       _isLoading = false;
     });
   }
@@ -212,6 +216,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     trailing: const Icon(Icons.chevron_right, color: Colors.white38),
                     onTap: () => showSuggestionDialog(context),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                _buildSectionHeader('SEGURIDAD Y CUENTA'),
+                Card(
+                  color: const Color(0xFF1E1E1E),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: ListTile(
+                    leading: const Icon(Icons.lock_reset_rounded, color: Color(0xFFB388FF)),
+                    title: Text(
+                      _currentUsername.isNotEmpty
+                          ? 'Actualizar Contraseña (@$_currentUsername)'
+                          : 'Iniciar Sesión / Crear Cuenta',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      _currentUsername.isNotEmpty
+                          ? 'Cambia tu contraseña actual o actualiza tu PIN de recuperación'
+                          : 'Actualmente estás en modo invitado. Inicia sesión para proteger tu cuenta.',
+                      style: const TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                    ),
+                    trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                    onTap: () {
+                      if (_currentUsername.isNotEmpty) {
+                        showChangePasswordDialog(context, _currentUsername);
+                      } else {
+                        Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(builder: (context) => const LoginScreen()),
+                        );
+                      }
+                    },
                   ),
                 ),
                 const SizedBox(height: 24),

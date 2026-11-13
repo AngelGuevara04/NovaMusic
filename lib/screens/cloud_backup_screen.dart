@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import '../providers/audio_provider.dart';
 import '../providers/downloader_provider.dart';
+import '../widgets/password_dialogs.dart';
 import 'downloader_screen.dart';
 
 class CloudBackupScreen extends StatefulWidget {
@@ -169,6 +170,12 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                         ],
                       ),
                     ),
+                    if (!audioProvider.isGuest && audioProvider.currentUsername != null)
+                      IconButton(
+                        tooltip: 'Actualizar Contraseña',
+                        icon: const Icon(Icons.lock_reset_rounded, color: Color(0xFFB388FF)),
+                        onPressed: () => showChangePasswordDialog(context, audioProvider.currentUsername!),
+                      ),
                   ],
                 ),
                 const SizedBox(height: 14),

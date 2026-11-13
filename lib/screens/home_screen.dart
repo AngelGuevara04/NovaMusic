@@ -1,6 +1,7 @@
 import 'playlists_screen.dart';
 import 'cloud_backup_screen.dart';
 import '../widgets/suggestion_dialog.dart';
+import '../widgets/password_dialogs.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/audio_provider.dart';
@@ -232,6 +233,18 @@ class _HomeScreenState extends State<HomeScreen> {
                           backgroundColor: Color(0xFF262626),
                         ),
                       );
+                    }
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.lock_reset_rounded, color: Color(0xFFB388FF)),
+                  title: const Text('Actualizar Contraseña', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('Cambia tu contraseña o configura tu PIN de recuperación', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    if (username != null && username.isNotEmpty) {
+                      showChangePasswordDialog(context, username);
                     }
                   },
                 ),

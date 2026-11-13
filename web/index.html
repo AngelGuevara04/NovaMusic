@@ -182,6 +182,15 @@
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
+    // Unregister any old service workers so the desktop/web app always loads the newest build
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(registrations) {
+        for (let registration of registrations) {
+          registration.unregister();
+        }
+      });
+    }
+
     // Fallback safety timeout (max 6 seconds)
     setTimeout(dismissSplashScreen, 6000);
   </script>
