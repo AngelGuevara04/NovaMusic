@@ -61,7 +61,11 @@ class DownloaderProvider extends ChangeNotifier {
         title.contains('bootleg') ||
         title.contains('8d audio') ||
         title.contains('bass boost') ||
-        title.contains('slowed');
+        title.contains('slowed') ||
+        title.contains('reverb') ||
+        title.contains('karaoke') ||
+        title.contains('reaccion') ||
+        title.contains('reacción');
   }
 
   static bool isStudioOfficial(Video video) {
@@ -80,7 +84,60 @@ class DownloaderProvider extends ChangeNotifier {
         title.contains('remastered') ||
         title.contains('version del album') ||
         title.contains('album version') ||
-        title.contains('(audio)');
+        title.contains('(audio)') ||
+        title.contains('[audio]') ||
+        title.contains('lyric video') ||
+        title.contains('letras');
+  }
+
+  static int getAudioQualityScore(Video video) {
+    final title = video.title.toLowerCase();
+    final author = video.author.toLowerCase();
+    int score = 0;
+
+    // Máxima prioridad: Pistas máster de estudio de YouTube Music ("- Topic")
+    if (author.contains('- topic')) {
+      score += 120;
+    }
+
+    // Alta prioridad: Audio oficial sin efectos ni diálogos de videoclip
+    if (title.contains('official audio') ||
+        title.contains('audio oficial') ||
+        title.contains('(audio)') ||
+        title.contains('[audio]') ||
+        title.contains('remastered') ||
+        title.contains('album version') ||
+        title.contains('version del album')) {
+      score += 90;
+    } else if (title.contains('lyric') || title.contains('letra')) {
+      score += 60;
+    }
+
+    // Canales oficiales / sellos discográficos
+    if (author.contains('vevo') ||
+        author.contains('official') ||
+        author.contains('records') ||
+        author.contains('sony') ||
+        author.contains('warner') ||
+        author.contains('universal') ||
+        author.contains('music')) {
+      score += 45;
+    }
+
+    // Penalizar grabaciones en vivo, saturadas o alteradas
+    if (isLiveOrLowQuality(video)) {
+      score -= 150;
+    }
+
+    // Penalizar Shorts (<45s) o compilaciones largas (>15 min)
+    final dur = video.duration;
+    if (dur != null) {
+      if (dur.inSeconds < 45 || dur.inMinutes > 15) {
+        score -= 80;
+      }
+    }
+
+    return score;
   }
 
   String? _currentRecommendationArtist;
@@ -181,22 +238,10 @@ class DownloaderProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final results = (await _yt.search.search(query)).toList();
+      final results = (await _yt.search.search(query).timeout(const Duration(seconds: 12))).toList();
       if (_highQualityFilter) {
-        // Ordenar y priorizar calidad de estudio / oficial sobre grabaciones en vivo
-        results.sort((a, b) {
-          final aIsStudio = isStudioOfficial(a);
-          final bIsStudio = isStudioOfficial(b);
-          if (aIsStudio && !bIsStudio) return -1;
-          if (!aIsStudio && bIsStudio) return 1;
-
-          final aIsLive = isLiveOrLowQuality(a);
-          final bIsLive = isLiveOrLowQuality(b);
-          if (!aIsLive && bIsLive) return -1;
-          if (aIsLive && !bIsLive) return 1;
-
-          return 0;
-        });
+        // Ordenar por puntaje de calidad de estudio (priorizando "- Topic" y "Official Audio")
+        results.sort((a, b) => getAudioQualityScore(b).compareTo(getAudioQualityScore(a)));
       }
       _searchResults = results;
     } catch (e) {
@@ -352,34 +397,93 @@ class DownloaderProvider extends ChangeNotifier {
     return fallbackDir.path;
   }
 
-  Future<void> _downloadNormalMethod(DownloadTask task, Function() onSuccess) async {
-    var video = await _yt.videos.get(task.url);
-    task.title = video.title;
-    notifyListeners();
-    _showProgressNotification(task, 0, "Preparando archivo...");
+  Future<Video> _findStudioMasterIfBetter(Video original, String cleanArtist, String cleanTitle) async {
+    if (!_highQualityFilter) return original;
+    final origAuthor = original.author.toLowerCase();
+    final origTitle = original.title.toLowerCase();
 
-    var manifest = await _yt.videos.streamsClient.getManifest(task.url);
-    StreamInfo? streamInfo;
-    if (manifest.audioOnly.isNotEmpty) {
-      streamInfo = manifest.audioOnly.withHighestBitrate();
-    } else if (manifest.muxed.isNotEmpty) {
-      streamInfo = manifest.muxed.withHighestBitrate();
+    // Si ya es una pista máster de estudio ("- Topic" o "Official Audio"), usarla directamente
+    if (origAuthor.contains('- topic') ||
+        origTitle.contains('official audio') ||
+        origTitle.contains('audio oficial')) {
+      return original;
     }
-    if (streamInfo == null) throw Exception("No se encontró stream de audio compatible");
 
-    Directory tempDir = await getTemporaryDirectory();
-    String safeTitle = video.title.replaceAll(RegExp(r'[<>:"/\\|?*]'), '').replaceAll(' ', '_');
-    final ext = streamInfo.container.name.toLowerCase();
-    File tempVideoFile = File('${tempDir.path}/${task.id}.$ext');
-    
-    // Auto-etiquetado
+    // Si el usuario explícitamente eligió algo "en vivo" o "live", respetarlo
+    if (isLiveOrLowQuality(original)) {
+      return original;
+    }
+
+    try {
+      final searchQuery = '$cleanArtist $cleanTitle official audio';
+      final candidates = await _yt.search.search(searchQuery).timeout(const Duration( milliseconds: 3500));
+      final normTargetTitle = cleanTitle.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+      final normTargetArtist = cleanArtist.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+      if (normTargetTitle.length < 3) return original;
+
+      for (final c in candidates) {
+        if (isLiveOrLowQuality(c)) continue;
+        final cAuthor = c.author.toLowerCase();
+        final cTitle = c.title.toLowerCase();
+        final cNormTitle = cTitle.replaceAll(RegExp(r'[^a-z0-9]'), '');
+        final cNormAuthor = cAuthor.replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+        final isTopicOrAudio = cAuthor.contains('- topic') ||
+            cTitle.contains('official audio') ||
+            cTitle.contains('audio oficial') ||
+            cTitle.contains('(audio)');
+
+        if (!isTopicOrAudio) continue;
+
+        final titleMatches = cNormTitle.contains(normTargetTitle) || normTargetTitle.contains(cNormTitle);
+        final artistMatches = normTargetArtist.isEmpty ||
+            cNormAuthor.contains(normTargetArtist) ||
+            cNormTitle.contains(normTargetArtist);
+
+        if (titleMatches && artistMatches) {
+          final dur = c.duration;
+          if (dur == null || (dur.inSeconds >= 50 && dur.inMinutes <= 12)) {
+            return c;
+          }
+        }
+      }
+    } catch (_) {}
+
+    return original;
+  }
+
+  Future<StreamManifest> _fetchManifestSafely(dynamic videoId) async {
+    try {
+      return await _yt.videos.streamsClient
+          .getManifest(videoId, requireWatchPage: false)
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      return await _yt.videos.streamsClient
+          .getManifest(videoId, requireWatchPage: true)
+          .timeout(const Duration(seconds: 10));
+    }
+  }
+
+  Future<void> _downloadNormalMethod(DownloadTask task, Function() onSuccess) async {
+    task.status = "Conectando con YouTube...";
+    notifyListeners();
+
+    var video = await _yt.videos.get(task.url).timeout(const Duration(seconds: 10));
+    task.title = video.title;
+    task.status = "Analizando mejor calidad de estudio...";
+    notifyListeners();
+    _showProgressNotification(task, 0, "Preparando audio de alta calidad...");
+
+    // Auto-etiquetado previo para búsqueda de máster de estudio
     String author = video.author;
     String songTitle = video.title;
-    
-    author = author.replaceAll(RegExp(r'VEVO', caseSensitive: false), '')
-                   .replaceAll(RegExp(r'- Topic', caseSensitive: false), '')
-                   .trim();
-                   
+
+    author = author
+        .replaceAll(RegExp(r'VEVO', caseSensitive: false), '')
+        .replaceAll(RegExp(r'- Topic', caseSensitive: false), '')
+        .trim();
+
     if (songTitle.contains(' - ')) {
       var parts = songTitle.split(' - ');
       if (parts.length >= 2) {
@@ -387,38 +491,73 @@ class DownloaderProvider extends ChangeNotifier {
         songTitle = parts[1].trim();
       }
     }
-    
+
     songTitle = songTitle.replaceAll(RegExp(r'\[.*?\]|\(.*?\)', caseSensitive: false), '').trim();
     if (author.isEmpty) author = "Desconocido";
     if (songTitle.isEmpty) songTitle = "Canción desconocida";
 
+    // Buscar si existe la pista máster "- Topic" / "Official Audio" sin diálogos de videoclip
+    Video audioSourceVideo = await _findStudioMasterIfBetter(video, author, songTitle);
+
+    StreamManifest manifest;
+    try {
+      manifest = await _fetchManifestSafely(audioSourceVideo.id);
+    } catch (_) {
+      audioSourceVideo = video;
+      manifest = await _fetchManifestSafely(video.id);
+    }
+
+    // Priorizar muxed en el cliente Android de youtube_explode_dart porque los streams
+    // adaptativos audioOnly reciben HTTP 403 (bloqueo SABR) y causan bucle infinito en "Iniciando..."
+    StreamInfo? streamInfo;
+    if (manifest.muxed.isNotEmpty) {
+      streamInfo = manifest.muxed.withHighestBitrate();
+    } else if (manifest.audioOnly.isNotEmpty) {
+      streamInfo = manifest.audioOnly.withHighestBitrate();
+    }
+    if (streamInfo == null) throw Exception("No se encontró stream de audio compatible");
+
+    Directory tempDir = await getTemporaryDirectory();
+    String safeTitle = video.title.replaceAll(RegExp(r'[<>:"/\\|?*]'), '').replaceAll(' ', '_');
+    final ext = streamInfo.container.name.toLowerCase();
+    File tempVideoFile = File('${tempDir.path}/${task.id}.$ext');
+
     if (await tempVideoFile.exists()) await tempVideoFile.delete();
+
+    task.status = "Iniciando descarga...";
+    notifyListeners();
 
     var stream = _yt.videos.streamsClient.get(streamInfo);
     var fileStream = tempVideoFile.openWrite(mode: FileMode.write);
     var totalBytes = streamInfo.size.totalBytes;
     var receivedBytes = 0;
 
-    await for (var data in stream) {
-      receivedBytes += data.length;
-      fileStream.add(data);
-      double currentProgress = receivedBytes / totalBytes;
+    try {
+      await for (var data in stream.timeout(const Duration(seconds: 12))) {
+        receivedBytes += data.length;
+        fileStream.add(data);
+        double currentProgress = totalBytes > 0 ? (receivedBytes / totalBytes) : 0.0;
 
-      if (currentProgress - task.progress > 0.02 || currentProgress == 1.0) {
-        task.progress = currentProgress;
-        task.status = 'Descargando: ${_formatBytes(receivedBytes)} / ${_formatBytes(totalBytes)}';
-        notifyListeners();
-        _showProgressNotification(task, (currentProgress * 100).toInt(), task.status);
+        if (currentProgress - task.progress > 0.02 || currentProgress >= 1.0) {
+          task.progress = currentProgress.clamp(0.0, 1.0);
+          task.status = 'Descargando: ${_formatBytes(receivedBytes)} / ${_formatBytes(totalBytes)}';
+          notifyListeners();
+          _showProgressNotification(task, (task.progress * 100).toInt(), task.status);
+        }
       }
+    } finally {
+      await fileStream.flush();
+      await fileStream.close();
     }
 
-    await fileStream.flush();
-    await fileStream.close();
+    if (receivedBytes == 0) {
+      throw Exception("Descarga vacía (0 bytes)");
+    }
 
-    task.status = 'Convirtiendo a MP3...';
+    task.status = 'Masterizando a MP3 320kbps...';
     task.progress = -1.0;
     notifyListeners();
-    _showProgressNotification(task, -1, "Extrayendo audio de alta calidad...");
+    _showProgressNotification(task, -1, "Masterizando audio de estudio 320kbps...");
 
     File tempThumbFile = File('${tempDir.path}/${task.id}_thumb.jpg');
     bool hasThumbnail = false;
@@ -434,28 +573,31 @@ class DownloaderProvider extends ChangeNotifier {
     File tempAudioFile = File('${tempDir.path}/${task.id}.mp3');
     if (await tempAudioFile.exists()) await tempAudioFile.delete();
 
-    // Normalización de volumen profesional EBU R128 (-14 LUFS, pico máximo -1.5 dB)
-    // para evitar audios alejados o saturados, más eliminación de silencios iniciales y finales.
-    String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,loudnorm=I=-14:TP=-1.5:LRA=11"';
+    // Cadena de masterización en tiempo real sin buffering en RAM (evita que FFmpeg se congele):
+    // 1. silenceremove: quita silencio inicial
+    // 2. highpass=f=25: limpia frecuencias subsónicas que ensucian la mezcla
+    // 3. acompressor: acerca las voces/instrumentos lejanos y nivela el volumen
+    // 4. alimiter: evita saturación/clipping en picos fuertes (-0.4 dB)
+    String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,highpass=f=25,acompressor=threshold=-16dB:ratio=2.2:attack=15:release=200:makeup=2.5dB,alimiter=limit=0.95:attack=5:release=50"';
     String metadata = '-metadata title="$songTitle" -metadata artist="$author"';
-    
+    String audioCodecFlags = '-ar 44100 -ac 2 -b:a 320k';
+
     String command;
     if (hasThumbnail) {
-      command = '-y -i "${tempVideoFile.path}" -i "${tempThumbFile.path}" -map 0:a -map 1:v $afFilter -b:a 320k -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${tempAudioFile.path}"';
+      command = '-y -i "${tempVideoFile.path}" -i "${tempThumbFile.path}" -map 0:a -map 1:v $afFilter $audioCodecFlags -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${tempAudioFile.path}"';
     } else {
-      command = '-y -i "${tempVideoFile.path}" -vn $afFilter -b:a 320k $metadata "${tempAudioFile.path}"';
+      command = '-y -i "${tempVideoFile.path}" -vn $afFilter $audioCodecFlags $metadata "${tempAudioFile.path}"';
     }
-    
+
     var session = await FFmpegKit.execute(command);
     var returnCode = await session.getReturnCode();
 
     if (!ReturnCode.isSuccess(returnCode)) {
-      // Fallback a filtro estándar si loudnorm dio error en algún contenedor
-      final fallbackFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse"';
+      // Fallback directo a 320kbps sin filtros complejos si algún contenedor falla
       if (hasThumbnail) {
-        command = '-y -i "${tempVideoFile.path}" -i "${tempThumbFile.path}" -map 0:a -map 1:v $fallbackFilter -b:a 320k -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${tempAudioFile.path}"';
+        command = '-y -i "${tempVideoFile.path}" -i "${tempThumbFile.path}" -map 0:a -map 1:v $audioCodecFlags -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${tempAudioFile.path}"';
       } else {
-        command = '-y -i "${tempVideoFile.path}" -vn $fallbackFilter -b:a 320k $metadata "${tempAudioFile.path}"';
+        command = '-y -i "${tempVideoFile.path}" -vn $audioCodecFlags $metadata "${tempAudioFile.path}"';
       }
       session = await FFmpegKit.execute(command);
       returnCode = await session.getReturnCode();
@@ -485,7 +627,7 @@ class DownloaderProvider extends ChangeNotifier {
         'isAudioOnly': true,
         'aFormat': 'mp3',
       }),
-    );
+    ).timeout(const Duration(seconds: 10));
 
     if (response.statusCode != 200) throw Exception('API rechazada');
 
@@ -498,7 +640,7 @@ class DownloaderProvider extends ChangeNotifier {
     notifyListeners();
 
     var request = http.Request('GET', Uri.parse(downloadUrl));
-    var streamedResponse = await request.send();
+    var streamedResponse = await request.send().timeout(const Duration(seconds: 10));
 
     var totalBytes = streamedResponse.contentLength ?? 0;
     var receivedBytes = 0;
@@ -509,28 +651,30 @@ class DownloaderProvider extends ChangeNotifier {
 
     var fileStream = tempFile.openWrite(mode: FileMode.write);
 
-    await for (var data in streamedResponse.stream) {
-      receivedBytes += data.length;
-      fileStream.add(data);
+    try {
+      await for (var data in streamedResponse.stream.timeout(const Duration(seconds: 12))) {
+        receivedBytes += data.length;
+        fileStream.add(data);
 
-      if (totalBytes > 0) {
-        double currentProgress = receivedBytes / totalBytes;
-        if (currentProgress - task.progress > 0.02 || currentProgress == 1.0) {
-          task.progress = currentProgress;
-          task.status = 'Respaldo: ${_formatBytes(receivedBytes)} / ${_formatBytes(totalBytes)}';
+        if (totalBytes > 0) {
+          double currentProgress = receivedBytes / totalBytes;
+          if (currentProgress - task.progress > 0.02 || currentProgress == 1.0) {
+            task.progress = currentProgress;
+            task.status = 'Respaldo: ${_formatBytes(receivedBytes)} / ${_formatBytes(totalBytes)}';
+            notifyListeners();
+            _showProgressNotification(task, (currentProgress * 100).toInt(), task.status);
+          }
+        } else {
+          task.progress = -1.0;
+          task.status = 'Respaldo: ${_formatBytes(receivedBytes)} descargados...';
           notifyListeners();
-          _showProgressNotification(task, (currentProgress * 100).toInt(), task.status);
+          _showProgressNotification(task, -1, task.status);
         }
-      } else {
-        task.progress = -1.0;
-        task.status = 'Respaldo: ${_formatBytes(receivedBytes)} descargados...';
-        notifyListeners();
-        _showProgressNotification(task, -1, task.status);
       }
+    } finally {
+      await fileStream.flush();
+      await fileStream.close();
     }
-
-    await fileStream.flush();
-    await fileStream.close();
 
     task.title = safeTitle;
     notifyListeners();

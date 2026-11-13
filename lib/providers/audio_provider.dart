@@ -1137,15 +1137,26 @@ class AudioProvider with ChangeNotifier {
         throw Exception("No se encontró el audio en la nube");
       }
 
-      final manifest = await _ytCloud.videos.streamsClient.getManifest(ytId).timeout(const Duration(seconds: 12));
+      StreamManifest manifest;
+      try {
+        manifest = await _ytCloud.videos.streamsClient
+            .getManifest(ytId, requireWatchPage: false)
+            .timeout(const Duration(seconds: 10));
+      } catch (_) {
+        manifest = await _ytCloud.videos.streamsClient
+            .getManifest(ytId)
+            .timeout(const Duration(seconds: 10));
+      }
       StreamInfo? streamInfo;
-      final mp4Audios = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
-      if (mp4Audios.isNotEmpty) {
-        streamInfo = mp4Audios.withHighestBitrate();
-      } else if (manifest.audioOnly.isNotEmpty) {
-        streamInfo = manifest.audioOnly.withHighestBitrate();
-      } else if (manifest.muxed.isNotEmpty) {
+      if (manifest.muxed.isNotEmpty) {
         streamInfo = manifest.muxed.withHighestBitrate();
+      } else {
+        final mp4Audios = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
+        if (mp4Audios.isNotEmpty) {
+          streamInfo = mp4Audios.withHighestBitrate();
+        } else if (manifest.audioOnly.isNotEmpty) {
+          streamInfo = manifest.audioOnly.withHighestBitrate();
+        }
       }
 
       if (streamInfo == null) throw Exception("Stream no disponible");
