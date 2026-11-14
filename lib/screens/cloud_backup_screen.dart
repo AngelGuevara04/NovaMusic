@@ -54,12 +54,14 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
           children: [
             Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
             SizedBox(width: 10),
-            Text('Sobrescribir Nube', style: TextStyle(color: Colors.white, fontSize: 18)),
+            Expanded(
+              child: Text('Sobrescribir Nube desde 0', style: TextStyle(color: Colors.white, fontSize: 18)),
+            ),
           ],
         ),
-        content: const Text(
-          'Esta acción reemplazará toda tu biblioteca en la nube únicamente con las canciones limpias que tienes actualmente en este dispositivo.\n\nÚtil si tienes canciones que se subieron mal o duplicadas.',
-          style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
+        content: Text(
+          'Esta acción borrará de la nube todas las canciones antiguas o eliminadas, y dejará respaldadas ÚNICAMENTE las ${provider.totalSongsCount} canciones que tienes ahora mismo en tu Lista de Canciones actual.',
+          style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
         ),
         actions: [
           TextButton(
@@ -74,13 +76,17 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text(ok ? '¡Biblioteca de la nube actualizada desde cero con éxito!' : 'Error al conectar con la nube.'),
+                    content: Text(
+                      ok
+                          ? '¡Nube actualizada desde 0 con tus ${provider.totalSongsCount} canciones actuales!'
+                          : 'Error al conectar con la nube.',
+                    ),
                     backgroundColor: ok ? const Color(0xFF7C4DFF) : Colors.redAccent,
                   ),
                 );
               }
             },
-            child: const Text('Sí, sobrescribir', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            child: const Text('Sí, sobrescribir de 0', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
         ],
       ),

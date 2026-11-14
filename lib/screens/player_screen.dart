@@ -7,6 +7,7 @@ import '../providers/audio_provider.dart';
 import '../providers/downloader_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/lyrics_service.dart';
+import '../widgets/device_output_dialog.dart';
 import 'equalizer_screen.dart';
 
 class PlayerScreen extends StatefulWidget {
@@ -382,7 +383,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   builder: (context, audioProvider, child) {
                     return InkWell(
                       borderRadius: BorderRadius.circular(20),
-                      onTap: () => _showDeviceDialog(context, audioProvider),
+                      onTap: () => showDeviceOutputSwitcherDialog(context),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                         decoration: BoxDecoration(

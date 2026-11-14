@@ -25,6 +25,8 @@ class AudioProvider with ChangeNotifier {
   List<SongModel> _allSongs = [];
   List<SongModel> _visibleSongs = [];
   List<int> _hiddenSongIds = [];
+  Set<String> _hiddenSongKeys = {};
+  Set<String> _deletedSongKeys = {};
   List<int> _favoriteSongIds = [];
   String? _currentUsername;
   bool _showOnlyFavorites = false;
@@ -33,6 +35,9 @@ class AudioProvider with ChangeNotifier {
   List<PlaylistModel> get playlists => _playlists;
   Map<String, dynamic>? _activeCloudDevice;
   Map<String, dynamic>? get activeCloudDevice => _activeCloudDevice;
+  Map<String, dynamic>? _lastRemotePlaybackState;
+  String? _lastHandledCommandId;
+  SongModel? _currentPlayingSong;
 
   String? _deviceId;
   String? get deviceId => _deviceId;
@@ -40,6 +45,7 @@ class AudioProvider with ChangeNotifier {
   List<Map<String, dynamic>> get connectedDevices => _connectedDevices;
   RealtimeChannel? _realtimeChannel;
   Timer? _heartbeatTimer;
+  Timer? _fastSyncTimer;
 
   String get currentDeviceName {
     if (kIsWeb) return 'Computadora (Web)';
@@ -117,25 +123,53 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
+  bool _isSongHiddenOrDeleted(SongModel s) {
+    final norm = normalizeForDedup(s.title);
+    if (_hiddenSongIds.contains(s.id)) return true;
+    if (norm.isNotEmpty && (_hiddenSongKeys.contains(norm) || _deletedSongKeys.contains(norm))) return true;
+    return false;
+  }
+
   Future<void> syncLocalSongsToCloud() async {
     final prefs = await SharedPreferences.getInstance();
     final username = _currentUsername ?? prefs.getString('current_username');
     if (username == null || username.isEmpty) return;
 
+    // Respaldar únicamente las canciones que están en la lista de canciones activa (_visibleSongs)
+    final List<Map<String, dynamic>> cleanCloud = [];
+    final Set<String> seenNorms = {};
+
     for (var s in _visibleSongs) {
+      if (_isSongHiddenOrDeleted(s)) continue;
       final title = s.title.trim();
-      final exists = _cloudLibrarySongs.any((c) => (c['title'] ?? '').toString().toLowerCase().trim() == title.toLowerCase());
-      if (!exists) {
-        _cloudLibrarySongs.add({
-          'id': s.id,
-          'title': title,
-          'artist': s.artist ?? 'Artista desconocido',
-          'youtube_id': s.getMap['youtube_id'] ?? '',
-          'duration': s.duration ?? 0,
-          'added_at': DateTime.now().toIso8601String(),
-        });
+      final norm = normalizeForDedup(title);
+      if (norm.isEmpty || seenNorms.contains(norm)) continue;
+      seenNorms.add(norm);
+
+      // Conservar youtube_id previo si ya existía en _cloudLibrarySongs
+      String ytId = s.getMap['youtube_id']?.toString() ?? '';
+      if (ytId.isEmpty) {
+        final match = _cloudLibrarySongs.firstWhere(
+          (c) => normalizeForDedup(c['title'] ?? '') == norm,
+          orElse: () => {},
+        );
+        ytId = match['youtube_id']?.toString() ?? '';
       }
+
+      cleanCloud.add({
+        'id': s.id,
+        'title': title,
+        'artist': s.artist ?? 'Artista desconocido',
+        'youtube_id': ytId,
+        'duration': s.duration ?? 0,
+        'url': s.data,
+        'is_cloud': true,
+        'added_at': DateTime.now().toIso8601String(),
+      });
     }
+
+    _cloudLibrarySongs = cleanCloud;
+    await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
     await syncPreferencesToCloud();
     await fetchSongs();
     notifyListeners();
@@ -285,9 +319,141 @@ class AudioProvider with ChangeNotifier {
 
   void _startHeartbeatTimer() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 40), (_) {
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
       registerDeviceInCloud();
     });
+
+    _fastSyncTimer?.cancel();
+    _fastSyncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      _pollCloudPlaybackAndDevices();
+    });
+  }
+
+  Future<void> refreshConnectedDevices() async {
+    await registerDeviceInCloud();
+    await _pollCloudPlaybackAndDevices();
+  }
+
+  Future<void> _pollCloudPlaybackAndDevices() async {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return;
+    try {
+      final supabase = Supabase.instance.client;
+      final res = await supabase
+          .from('user_preferences')
+          .select('connected_devices, active_device, playback_state')
+          .eq('username', _currentUsername!)
+          .maybeSingle();
+      if (res != null) {
+        _handleIncomingCloudRecord(Map<String, dynamic>.from(res));
+      }
+    } catch (_) {}
+  }
+
+  void _handleIncomingCloudRecord(Map<String, dynamic> newRec) {
+    bool changed = false;
+
+    // 1. Sincronizar dispositivos conectados
+    if (newRec['connected_devices'] != null && newRec['connected_devices'] is List) {
+      final now = DateTime.now();
+      final list = (newRec['connected_devices'] as List)
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .where((m) {
+            if (m['id'] == _deviceId) return true;
+            final lastSeen = DateTime.tryParse(m['last_seen']?.toString() ?? '');
+            return lastSeen == null || now.difference(lastSeen).inMinutes < 4;
+          })
+          .toList();
+      _connectedDevices = list;
+      changed = true;
+    }
+
+    if (newRec['active_device'] != null && newRec['active_device'] is Map) {
+      _activeCloudDevice = Map<String, dynamic>.from(newRec['active_device'] as Map);
+      changed = true;
+    }
+
+    // 2. Control de salida de audio remoto (tipo Spotify Connect)
+    if (newRec['playback_state'] != null && newRec['playback_state'] is Map) {
+      final pb = Map<String, dynamic>.from(newRec['playback_state'] as Map);
+      _lastRemotePlaybackState = pb;
+      final cmdId = pb['command_id']?.toString() ?? pb['updated_at']?.toString() ?? '';
+      final targetId = pb['target_device_id']?.toString();
+      final action = pb['action']?.toString();
+
+      if (cmdId.isNotEmpty && cmdId != _lastHandledCommandId) {
+        // Ignorar si la orden es vieja (> 45 segundos) al abrir la app
+        final updatedAt = DateTime.tryParse(pb['updated_at']?.toString() ?? '');
+        final isRecent = updatedAt == null || DateTime.now().difference(updatedAt).inSeconds < 45;
+
+        _lastHandledCommandId = cmdId;
+
+        if (isRecent) {
+          if (targetId == _deviceId) {
+            // Este dispositivo fue elegido como salida de audio
+            if (action == 'play') {
+              final songMap = pb['song'];
+              final posMs = (pb['position_ms'] is num) ? (pb['position_ms'] as num).toInt() : 0;
+              if (songMap is Map) {
+                _playTransferredSong(Map<String, dynamic>.from(songMap), posMs);
+              }
+            } else if (action == 'pause') {
+              _audioPlayer.pause();
+            }
+          } else if (targetId != null && targetId != _deviceId) {
+            // Otro dispositivo tiene la salida activa: pausar este dispositivo inmediatamente
+            if (_isPlaying || _audioPlayer.playing) {
+              _audioPlayer.pause();
+              _isPlaying = false;
+            }
+          }
+        }
+      }
+      changed = true;
+    }
+
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
+  Future<void> _playTransferredSong(Map<String, dynamic> songMap, int posMs) async {
+    final targetIdStr = (songMap['_id'] ?? songMap['id'] ?? '').toString();
+    final targetTitle = (songMap['title'] ?? '').toString();
+    final normTarget = normalizeForDedup(targetTitle);
+
+    int songIdx = songs.indexWhere((s) =>
+        s.id.toString() == targetIdStr ||
+        (normTarget.isNotEmpty && normalizeForDedup(s.title) == normTarget));
+
+    if (songIdx != -1) {
+      await playSong(songIdx);
+      if (posMs > 0) {
+        try {
+          await _audioPlayer.seek(Duration(milliseconds: posMs));
+        } catch (_) {}
+      }
+    } else {
+      // Si la canción no estaba en la lista local de este dispositivo, reproducirla desde la nube
+      final tempSong = SongModel({
+        '_id': int.tryParse(targetIdStr) ?? DateTime.now().millisecondsSinceEpoch,
+        'title': targetTitle.isNotEmpty ? targetTitle : 'Canción transferida',
+        'artist': songMap['artist'] ?? 'En la Nube ☁️',
+        'duration': songMap['duration'] is int ? songMap['duration'] : 0,
+        '_data': songMap['_data'] ?? songMap['url'] ?? '',
+        'is_cloud': true,
+        'youtube_id': songMap['youtube_id'] ?? '',
+      });
+      _visibleSongs.insert(0, tempSong);
+      _allSongs.insert(0, tempSong);
+      notifyListeners();
+      await _playCloudSong(tempSong, 0);
+      if (posMs > 0) {
+        try {
+          await _audioPlayer.seek(Duration(milliseconds: posMs));
+        } catch (_) {}
+      }
+    }
   }
 
   void _subscribeToRealtimeSync() {
@@ -309,49 +475,7 @@ class AudioProvider with ChangeNotifier {
           callback: (payload) {
             final newRec = payload.newRecord;
             if (newRec == null) return;
-
-            // 1. Sincronizar dispositivos conectados
-            if (newRec['connected_devices'] != null && newRec['connected_devices'] is List) {
-              _connectedDevices = (newRec['connected_devices'] as List)
-                  .map((e) => Map<String, dynamic>.from(e as Map))
-                  .toList();
-            }
-
-            // 2. Control de salida de audio remoto (tipo Spotify Connect)
-            if (newRec['playback_state'] != null && newRec['playback_state'] is Map) {
-              final pb = Map<String, dynamic>.from(newRec['playback_state'] as Map);
-              final targetId = pb['target_device_id'];
-              final action = pb['action'];
-
-              if (targetId == _deviceId) {
-                // Este dispositivo fue elegido como salida
-                if (action == 'play') {
-                  final songMap = pb['song'];
-                  final posMs = pb['position_ms'] ?? 0;
-                  if (songMap != null) {
-                    final targetSong = _allSongs.firstWhere(
-                      (s) => s.id.toString() == songMap['id']?.toString() || s.title == songMap['title'],
-                      orElse: () => SongModel(Map<String, dynamic>.from(songMap as Map)),
-                    );
-                    final songIdx = _visibleSongs.indexWhere((s) => s.id == targetSong.id);
-                    if (songIdx != -1) {
-                      playSong(songIdx).then((_) {
-                        _audioPlayer.seek(Duration(milliseconds: posMs));
-                      });
-                    }
-                  }
-                } else if (action == 'pause') {
-                  _audioPlayer.pause();
-                }
-              } else if (targetId != null && targetId != _deviceId) {
-                // Otro dispositivo está reproduciendo ahora: pausar reproducción local
-                if (_isPlaying) {
-                  _audioPlayer.pause();
-                }
-              }
-            }
-
-            notifyListeners();
+            _handleIncomingCloudRecord(Map<String, dynamic>.from(newRec));
           },
         )
         .subscribe();
@@ -375,73 +499,157 @@ class AudioProvider with ChangeNotifier {
 
   Future<void> switchAudioOutput(String targetDeviceId) async {
     if (_currentUsername == null || _currentUsername!.isEmpty) return;
-    if (currentSong == null) return;
+    if (_deviceId == null) await _initDeviceId();
 
-    if (targetDeviceId == _deviceId) {
-      if (!_isPlaying) _audioPlayer.play();
-      return;
+    SongModel? songToTransfer = currentSong;
+    int positionMs = _currentPosition.inMilliseconds;
+
+    // Si en este dispositivo no hay canción cargada pero otro dispositivo está reproduciendo,
+    // usar la canción del estado remoto o la primera de la lista
+    if (songToTransfer == null && _lastRemotePlaybackState != null && _lastRemotePlaybackState!['song'] is Map) {
+      final remoteSongMap = Map<String, dynamic>.from(_lastRemotePlaybackState!['song'] as Map);
+      songToTransfer = SongModel(remoteSongMap);
+      positionMs = (_lastRemotePlaybackState!['position_ms'] is num)
+          ? (_lastRemotePlaybackState!['position_ms'] as num).toInt()
+          : 0;
+    } else if (songToTransfer == null && _activeCloudDevice != null) {
+      final activeTitle = (_activeCloudDevice!['song_title'] ?? '').toString();
+      if (activeTitle.isNotEmpty) {
+        final norm = normalizeForDedup(activeTitle);
+        final matchIdx = songs.indexWhere((s) => normalizeForDedup(s.title) == norm);
+        if (matchIdx != -1) {
+          songToTransfer = songs[matchIdx];
+        }
+      }
     }
+    if (songToTransfer == null && songs.isNotEmpty) {
+      songToTransfer = songs.first;
+    }
+    if (songToTransfer == null) return;
 
-    final targetName = _connectedDevices.firstWhere(
-      (d) => d['id'] == targetDeviceId,
-      orElse: () => {'name': 'Dispositivo Remoto'},
-    )['name'];
+    final targetName = targetDeviceId == _deviceId
+        ? currentDeviceName
+        : (_connectedDevices.firstWhere(
+              (d) => d['id'] == targetDeviceId,
+              orElse: () => {'name': 'Dispositivo Remoto'},
+            )['name'] ??
+            'Dispositivo Remoto');
+
+    final commandId = 'cmd_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+    final songPayload = <String, dynamic>{
+      '_id': songToTransfer.id,
+      'id': songToTransfer.id,
+      'title': songToTransfer.title,
+      'artist': songToTransfer.artist ?? 'Artista desconocido',
+      'duration': songToTransfer.duration ?? 0,
+      '_data': songToTransfer.data,
+      'youtube_id': songToTransfer.getMap['youtube_id'] ?? '',
+    };
 
     try {
       final supabase = Supabase.instance.client;
-      await supabase.from('user_preferences').update({
-        'playback_state': {
-          'target_device_id': targetDeviceId,
-          'action': 'play',
-          'song': currentSong!.getMap,
-          'position_ms': _currentPosition.inMilliseconds,
-          'sender_device_id': _deviceId,
-          'updated_at': DateTime.now().toIso8601String(),
-        },
-        'active_device': {
-          'device_id': targetDeviceId,
-          'device_name': targetName,
-          'is_playing': true,
-          'song_title': currentSong?.title ?? '',
-          'updated_at': DateTime.now().toIso8601String(),
-        }
-      }).eq('username', _currentUsername!);
+      final nowIso = DateTime.now().toIso8601String();
+      final newActiveDevice = {
+        'device_id': targetDeviceId,
+        'device_name': targetName,
+        'is_playing': true,
+        'song_title': songToTransfer.title,
+        'updated_at': nowIso,
+      };
+      final newPlaybackState = {
+        'command_id': commandId,
+        'target_device_id': targetDeviceId,
+        'action': 'play',
+        'song': songPayload,
+        'position_ms': positionMs,
+        'sender_device_id': _deviceId,
+        'updated_at': nowIso,
+      };
 
-      // Pausar salida local
-      _audioPlayer.pause();
+      _activeCloudDevice = newActiveDevice;
+      _lastRemotePlaybackState = newPlaybackState;
+
+      if (targetDeviceId == _deviceId) {
+        // Traer la salida de audio a ESTE dispositivo
+        _lastHandledCommandId = commandId;
+        await supabase.from('user_preferences').update({
+          'playback_state': newPlaybackState,
+          'active_device': newActiveDevice,
+          'last_active': nowIso,
+        }).eq('username', _currentUsername!);
+        await _playTransferredSong(songPayload, positionMs);
+      } else {
+        // Enviar la salida de audio a OTRO dispositivo y pausar este
+        _lastHandledCommandId = commandId;
+        await _audioPlayer.pause();
+        _isPlaying = false;
+        notifyListeners();
+
+        await supabase.from('user_preferences').update({
+          'playback_state': newPlaybackState,
+          'active_device': newActiveDevice,
+          'last_active': nowIso,
+        }).eq('username', _currentUsername!);
+      }
       notifyListeners();
     } catch (e) {
       print('Error switching audio output: $e');
     }
   }
 
-  /// Sobrescribir toda la biblioteca de la nube con las canciones limpias de este dispositivo
+  /// Sobrescribir toda la biblioteca de la nube desde 0 ÚNICAMENTE con las canciones actuales en la lista de canciones
   Future<bool> overwriteCloudLibraryWithDeviceSongs() async {
     if (_currentUsername == null || _currentUsername!.isEmpty) return false;
     try {
       final supabase = Supabase.instance.client;
-      final localOnly = _visibleSongs.where((s) => !isCloudSong(s)).toList();
+      final prefs = await SharedPreferences.getInstance();
 
-      final List<Map<String, dynamic>> newLibrary = localOnly.map((s) {
-        return {
+      // Tomar EXCLUSIVAMENTE las canciones que están en la lista de canciones visible (_visibleSongs)
+      // y que NO estén ocultas ni eliminadas. En celular priorizamos archivos físicos reales.
+      final bool isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+      final List<SongModel> currentListSongs = _visibleSongs.where((s) {
+        if (_isSongHiddenOrDeleted(s)) return false;
+        if (isMobile && isCloudSong(s)) return false;
+        return true;
+      }).toList();
+
+      final List<Map<String, dynamic>> newLibrary = [];
+      final Set<String> seenNorms = {};
+
+      for (var s in currentListSongs) {
+        final norm = normalizeForDedup(s.title);
+        if (norm.isEmpty || seenNorms.contains(norm)) continue;
+        seenNorms.add(norm);
+
+        String ytId = s.getMap['youtube_id']?.toString() ?? '';
+        if (ytId.isEmpty) {
+          final oldMatch = _cloudLibrarySongs.firstWhere(
+            (c) => normalizeForDedup(c['title'] ?? '') == norm,
+            orElse: () => {},
+          );
+          ytId = oldMatch['youtube_id']?.toString() ?? '';
+        }
+
+        newLibrary.add({
           'id': s.id,
-          'title': s.title,
+          'title': s.title.trim(),
           'artist': s.artist ?? 'Artista desconocido',
           'duration': s.duration ?? 0,
           'url': s.data,
-          'youtube_id': s.getMap['youtube_id'] ?? '',
+          'youtube_id': ytId,
           'is_cloud': true,
           'added_at': DateTime.now().toIso8601String(),
-        };
-      }).toList();
+        });
+      }
 
+      // Actualizar en Supabase reemplazando desde 0 library_songs y hidden_songs
       await supabase.from('user_preferences').update({
         'library_songs': newLibrary,
+        'hidden_songs': _hiddenSongIds.map((e) => e.toString()).toList(),
         'last_active': DateTime.now().toIso8601String(),
       }).eq('username', _currentUsername!);
 
       _cloudLibrarySongs = newLibrary;
-      final prefs = await SharedPreferences.getInstance();
       await prefs.setString('cached_library_songs', jsonEncode(newLibrary));
 
       await fetchSongs();
@@ -453,17 +661,27 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
-  /// Fusionar canciones de este dispositivo con las de la nube sin duplicados
+  /// Fusionar las canciones activas de la lista de este dispositivo con la nube (respetando las eliminadas/ocultas)
   Future<bool> mergeDeviceSongsIntoCloudLibrary() async {
     if (_currentUsername == null || _currentUsername!.isEmpty) return false;
     try {
       final supabase = Supabase.instance.client;
-      final existing = List<Map<String, dynamic>>.from(_cloudLibrarySongs);
+      final prefs = await SharedPreferences.getInstance();
 
-      final localOnly = _visibleSongs.where((s) => !isCloudSong(s)).toList();
+      // Primero limpiar de la nube cualquier canción que haya sido ocultada o eliminada en este dispositivo
+      final existing = _cloudLibrarySongs.where((c) {
+        final norm = normalizeForDedup(c['title'] ?? '');
+        final idInt = int.tryParse(c['id']?.toString() ?? '');
+        if (idInt != null && _hiddenSongIds.contains(idInt)) return false;
+        if (norm.isNotEmpty && (_hiddenSongKeys.contains(norm) || _deletedSongKeys.contains(norm))) return false;
+        return true;
+      }).toList();
 
-      for (var s in localOnly) {
+      final activeListSongs = _visibleSongs.where((s) => !_isSongHiddenOrDeleted(s) && !isCloudSong(s)).toList();
+
+      for (var s in activeListSongs) {
         final normTitle = normalizeForDedup(s.title);
+        if (normTitle.isEmpty) continue;
         final exists = existing.any((c) {
           final cId = c['id']?.toString();
           final cTitle = normalizeForDedup(c['title'] ?? '');
@@ -473,7 +691,7 @@ class AudioProvider with ChangeNotifier {
         if (!exists) {
           existing.add({
             'id': s.id,
-            'title': s.title,
+            'title': s.title.trim(),
             'artist': s.artist ?? 'Artista desconocido',
             'duration': s.duration ?? 0,
             'url': s.data,
@@ -490,7 +708,6 @@ class AudioProvider with ChangeNotifier {
       }).eq('username', _currentUsername!);
 
       _cloudLibrarySongs = existing;
-      final prefs = await SharedPreferences.getInstance();
       await prefs.setString('cached_library_songs', jsonEncode(existing));
 
       await fetchSongs();
@@ -547,6 +764,10 @@ class AudioProvider with ChangeNotifier {
   int? get currentIndex => _currentIndex;
   
   SongModel? get currentSong {
+    if (_currentPlayingSong != null) return _currentPlayingSong;
+    if (_currentIndex != null && _currentIndex! >= 0 && _currentIndex! < songs.length) {
+      return songs[_currentIndex!];
+    }
     if (_currentIndex == null || _playlist == null || _currentIndex! >= _playlist!.children.length) return null;
     try {
       final tag = (_playlist!.children[_currentIndex!] as UriAudioSource).tag as MediaItem;
@@ -678,6 +899,9 @@ class AudioProvider with ChangeNotifier {
     _audioPlayer.currentIndexStream.listen((index) {
       if (index != null && index != _currentIndex) {
         _currentIndex = index;
+        if (index >= 0 && index < songs.length) {
+          _currentPlayingSong = songs[index];
+        }
         notifyListeners();
       }
     });
@@ -686,7 +910,20 @@ class AudioProvider with ChangeNotifier {
   Future<void> _loadHiddenSongs() async {
     final prefs = await SharedPreferences.getInstance();
     final hiddenList = prefs.getStringList('hidden_songs') ?? [];
-    _hiddenSongIds = hiddenList.map((e) => int.parse(e)).toList();
+    _hiddenSongIds = [];
+    _hiddenSongKeys = (prefs.getStringList('hidden_song_keys') ?? []).toSet();
+    _deletedSongKeys = (prefs.getStringList('permanently_deleted_songs') ?? []).toSet();
+
+    for (var entry in hiddenList) {
+      if (entry.startsWith('key:')) {
+        _hiddenSongKeys.add(entry.substring(4));
+      } else if (entry.startsWith('del:')) {
+        _deletedSongKeys.add(entry.substring(4));
+      } else {
+        final parsed = int.tryParse(entry);
+        if (parsed != null) _hiddenSongIds.add(parsed);
+      }
+    }
   }
 
   Future<void> loadPreferencesFromSupabase(String username) async {
@@ -702,12 +939,24 @@ class AudioProvider with ChangeNotifier {
       if (response != null) {
         final prefs = await SharedPreferences.getInstance();
 
-        // 1. Ocultas
+        // 1. Ocultas y Eliminadas
         if (response['hidden_songs'] != null) {
           List<dynamic> hidden = response['hidden_songs'];
-          _hiddenSongIds = hidden.map((e) => int.tryParse(e.toString())).whereType<int>().toList();
-          final hiddenList = _hiddenSongIds.map((e) => e.toString()).toList();
-          await prefs.setStringList('hidden_songs', hiddenList);
+          _hiddenSongIds = [];
+          for (var e in hidden) {
+            final s = e.toString();
+            if (s.startsWith('key:')) {
+              _hiddenSongKeys.add(s.substring(4));
+            } else if (s.startsWith('del:')) {
+              _deletedSongKeys.add(s.substring(4));
+            } else {
+              final id = int.tryParse(s);
+              if (id != null) _hiddenSongIds.add(id);
+            }
+          }
+          await prefs.setStringList('hidden_songs', _hiddenSongIds.map((e) => e.toString()).toList());
+          await prefs.setStringList('hidden_song_keys', _hiddenSongKeys.toList());
+          await prefs.setStringList('permanently_deleted_songs', _deletedSongKeys.toList());
         }
 
         // 2. Favoritas
@@ -724,10 +973,19 @@ class AudioProvider with ChangeNotifier {
           await prefs.setBool('auto_delete_from_device', autoDel);
         }
 
-        // 4. Biblioteca personal de canciones en la nube
+        // 4. Biblioteca personal de canciones en la nube (filtrando ocultas/eliminadas)
         if (response['library_songs'] != null) {
           List<dynamic> lib = response['library_songs'];
-          _cloudLibrarySongs = lib.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          _cloudLibrarySongs = lib
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .where((c) {
+                final norm = normalizeForDedup(c['title'] ?? '');
+                final cId = int.tryParse(c['id']?.toString() ?? '');
+                if (cId != null && _hiddenSongIds.contains(cId)) return false;
+                if (norm.isNotEmpty && (_hiddenSongKeys.contains(norm) || _deletedSongKeys.contains(norm))) return false;
+                return true;
+              })
+              .toList();
           await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
         }
 
@@ -747,6 +1005,11 @@ class AudioProvider with ChangeNotifier {
               .map((e) => Map<String, dynamic>.from(e as Map))
               .toList();
         }
+        if (response['playback_state'] != null && response['playback_state'] is Map) {
+          final pb = Map<String, dynamic>.from(response['playback_state'] as Map);
+          _lastRemotePlaybackState = pb;
+          _lastHandledCommandId = pb['command_id']?.toString() ?? pb['updated_at']?.toString();
+        }
 
         // Registrar este dispositivo e iniciar sincronización en tiempo real
         await registerDeviceInCloud();
@@ -760,14 +1023,7 @@ class AudioProvider with ChangeNotifier {
           }).eq('username', username);
         } catch (_) {}
 
-        if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
-          await fetchSongs();
-        } else {
-          _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
-          _applySort();
-          _needsPlaylistRebuild = true;
-          notifyListeners();
-        }
+        await fetchSongs();
       }
     } catch (e) {
       print('Error loading from Supabase: $e');
@@ -776,19 +1032,29 @@ class AudioProvider with ChangeNotifier {
 
   Future<void> _saveHiddenSongs() async {
     final prefs = await SharedPreferences.getInstance();
-    final hiddenList = _hiddenSongIds.map((e) => e.toString()).toList();
-    await prefs.setStringList('hidden_songs', hiddenList);
-    
+    final idStrings = _hiddenSongIds.map((e) => e.toString()).toList();
+    await prefs.setStringList('hidden_songs', idStrings);
+    await prefs.setStringList('hidden_song_keys', _hiddenSongKeys.toList());
+    await prefs.setStringList('permanently_deleted_songs', _deletedSongKeys.toList());
+
+    final combinedForCloud = <String>[
+      ...idStrings,
+      ..._hiddenSongKeys.map((k) => 'key:$k'),
+      ..._deletedSongKeys.map((k) => 'del:$k'),
+    ];
+
     // Sync to Supabase
-    final username = prefs.getString('current_username');
+    final username = _currentUsername ?? prefs.getString('current_username');
     if (username != null && username.isNotEmpty) {
       try {
         final supabase = Supabase.instance.client;
         await supabase.from('user_preferences').update({
-          'hidden_songs': hiddenList,
+          'hidden_songs': combinedForCloud,
+          'library_songs': _cloudLibrarySongs,
+          'last_active': DateTime.now().toIso8601String(),
         }).eq('username', username);
       } catch (e) {
-        print('Error syncing to Supabase: $e');
+        print('Error syncing hidden/library songs to Supabase: $e');
       }
     }
   }
@@ -849,7 +1115,11 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
-  List<SongModel> get hiddenSongs => _allSongs.where((s) => _hiddenSongIds.contains(s.id)).toList();
+  List<SongModel> get hiddenSongs => _allSongs.where((s) {
+        final norm = normalizeForDedup(s.title);
+        if (_deletedSongKeys.contains(norm)) return false;
+        return _hiddenSongIds.contains(s.id) || (norm.isNotEmpty && _hiddenSongKeys.contains(norm));
+      }).toList();
 
   Future<void> fetchSongs() async {
     if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
@@ -862,7 +1132,7 @@ class AudioProvider with ChangeNotifier {
         'is_cloud': true,
         'youtube_id': c['youtube_id'] ?? '',
       })).toList();
-      _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
+      _visibleSongs = _allSongs.where((song) => !_isSongHiddenOrDeleted(song)).toList();
       _applySort();
       _needsPlaylistRebuild = true;
       notifyListeners();
@@ -936,6 +1206,9 @@ class AudioProvider with ChangeNotifier {
       final normTitle = normalizeForDedup(song.title);
       if (normTitle.isEmpty) return;
 
+      // Si el usuario borró permanentemente esta canción, ignorar aunque MediaStore aún no haya refrescado
+      if (_deletedSongKeys.contains(normTitle)) return;
+
       // Comprobar si ya existe una canción con título similar o archivo duplicado
       bool isDuplicate = false;
       for (var existing in verifiedSongs) {
@@ -1001,12 +1274,28 @@ class AudioProvider with ChangeNotifier {
 
     // 3. ASIGNAR LISTA FINAL (SOLO LOCALES, 100% REPRODUCIBLES, CERO DUPLICADOS)
     _allSongs = verifiedSongs;
+    _visibleSongs = _allSongs.where((song) => !_isSongHiddenOrDeleted(song)).toList();
+    _applySort();
 
-    // 4. Sincronizar catálogo de respaldo en la nube del usuario (sin inyectar canciones fantasma en pantalla)
+    // 4. Sincronizar catálogo de respaldo en la nube: SOLO las canciones que están en _visibleSongs
+    // y limpiar de _cloudLibrarySongs cualquier canción que haya sido quitada de la lista o eliminada
     if (!isGuest) {
       bool needsCloudSync = false;
-      for (var local in verifiedSongs) {
+      final beforeLen = _cloudLibrarySongs.length;
+      _cloudLibrarySongs.removeWhere((c) {
+        final cNorm = normalizeForDedup(c['title'] ?? '');
+        final cId = int.tryParse(c['id']?.toString() ?? '');
+        if (cId != null && _hiddenSongIds.contains(cId)) return true;
+        if (cNorm.isNotEmpty && (_hiddenSongKeys.contains(cNorm) || _deletedSongKeys.contains(cNorm))) return true;
+        return false;
+      });
+      if (_cloudLibrarySongs.length != beforeLen) {
+        needsCloudSync = true;
+      }
+
+      for (var local in _visibleSongs) {
         final localNorm = normalizeForDedup(local.title);
+        if (localNorm.isEmpty) continue;
         final inCloud = _cloudLibrarySongs.any((c) => normalizeForDedup(c['title'] ?? '') == localNorm);
         if (!inCloud) {
           _cloudLibrarySongs.add({
@@ -1021,12 +1310,11 @@ class AudioProvider with ChangeNotifier {
         }
       }
       if (needsCloudSync) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
         await syncPreferencesToCloud();
       }
     }
-
-    _visibleSongs = _allSongs.where((song) => !_hiddenSongIds.contains(song.id)).toList();
-    _applySort();
     final newSongIds = _visibleSongs.map((s) => s.id).toList();
     final bool songsChanged = !listEquals(oldSongIds, newSongIds);
 
@@ -1120,13 +1408,40 @@ class AudioProvider with ChangeNotifier {
   Future<void> _playCloudSong(SongModel song, int index) async {
     try {
       _currentIndex = index;
+      _currentPlayingSong = song;
       _isPlaying = false;
       _isConnectingCloudStream = true;
       notifyListeners();
 
+      final mediaItem = MediaItem(
+        id: song.id.toString(),
+        title: song.title,
+        artist: (song.artist != null && song.artist!.isNotEmpty) ? song.artist! : 'En la Nube ☁️',
+        album: 'NovaMusic Nube',
+      );
+
       String ytId = song.getMap['youtube_id']?.toString() ?? '';
+
+      if (kIsWeb) {
+        // En PC / Web usar el proxy local libre de CORS (/api/stream)
+        final queryStr = '${song.title} ${song.artist ?? ""}'.trim();
+        final streamUri = Uri.parse(
+          '/api/stream?id=${Uri.encodeComponent(ytId)}&q=${Uri.encodeComponent(queryStr)}',
+        );
+        final source = AudioSource.uri(streamUri, tag: mediaItem);
+        await _audioPlayer.setAudioSource(source).timeout(const Duration(seconds: 15));
+        _isConnectingCloudStream = false;
+        _isPlaying = true;
+        notifyListeners();
+        await _audioPlayer.play();
+        updateActiveDeviceInCloud();
+        return;
+      }
+
       if (ytId.isEmpty) {
-        final searchResults = await _ytCloud.search.search('${song.title} ${song.artist ?? ""}');
+        final searchResults = await _ytCloud.search
+            .search('${song.title} ${song.artist ?? ""} official audio')
+            .timeout(const Duration(seconds: 10));
         if (searchResults.isNotEmpty) {
           ytId = searchResults.first.id.value;
           song.getMap['youtube_id'] = ytId;
@@ -1162,12 +1477,6 @@ class AudioProvider with ChangeNotifier {
       if (streamInfo == null) throw Exception("Stream no disponible");
 
       final contentType = streamInfo.container.name.toLowerCase() == 'mp4' ? 'audio/mp4' : 'audio/webm';
-      final mediaItem = MediaItem(
-        id: song.id.toString(),
-        title: song.title,
-        artist: (song.artist != null && song.artist!.isNotEmpty) ? song.artist! : 'En la Nube ☁️',
-        album: 'NovaMusic Nube',
-      );
 
       final source = YouTubeAudioSource(
         uri: streamInfo.url,
@@ -1190,9 +1499,11 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> playSong(int index) async {
-    if (index < 0 || index >= _visibleSongs.length) return;
+    if (index < 0 || index >= songs.length) return;
 
     final targetSong = songs[index];
+    _currentPlayingSong = targetSong;
+
     if (isCloudSong(targetSong)) {
       await _playCloudSong(targetSong, index);
       return;
@@ -1283,13 +1594,26 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> hideSong(SongModel song) async {
+    final norm = normalizeForDedup(song.title);
     if (!_hiddenSongIds.contains(song.id)) {
       _hiddenSongIds.add(song.id);
-      await _saveHiddenSongs();
-      
-      _visibleSongs.removeWhere((s) => s.id == song.id);
-      await _handleSongRemoved(song);
     }
+    if (norm.isNotEmpty) {
+      _hiddenSongKeys.add(norm);
+    }
+
+    // Quitar de la lista visible y del respaldo de la nube (solo se respalda lo que está en la lista)
+    _visibleSongs.removeWhere((s) => s.id == song.id || (norm.isNotEmpty && normalizeForDedup(s.title) == norm));
+    _cloudLibrarySongs.removeWhere((c) {
+      final cId = c['id']?.toString();
+      final cNorm = normalizeForDedup(c['title'] ?? '');
+      return cId == song.id.toString() || (norm.isNotEmpty && cNorm == norm);
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
+    await _saveHiddenSongs();
+    await _handleSongRemoved(song);
   }
 
   Future<void> _handleSongRemoved(SongModel song) async {
@@ -1303,6 +1627,7 @@ class AudioProvider with ChangeNotifier {
         await _audioPlayer.stop();
         _playlist = null;
         _currentIndex = null;
+        _currentPlayingSong = null;
         _currentPosition = Duration.zero;
         _totalDuration = Duration.zero;
         _isPlaying = false;
@@ -1313,6 +1638,7 @@ class AudioProvider with ChangeNotifier {
         }
         await _audioPlayer.stop();
         _currentIndex = nextIndex;
+        _currentPlayingSong = _visibleSongs[nextIndex];
         await _setupAudioSource(initialIndex: nextIndex, initialPosition: Duration.zero);
         if (wasPlaying) {
           try {
@@ -1343,56 +1669,147 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<bool> deletePhysicalSong(SongModel song) async {
+    final norm = normalizeForDedup(song.title);
+
+    // 1. Marcar como eliminada permanentemente para que ni MediaStore ni la nube la revivan
+    if (!_hiddenSongIds.contains(song.id)) {
+      _hiddenSongIds.add(song.id);
+    }
+    if (norm.isNotEmpty) {
+      _deletedSongKeys.add(norm);
+      _hiddenSongKeys.add(norm);
+    }
+
+    // 2. Quitar de memoria, favoritas y biblioteca en la nube
+    _allSongs.removeWhere((s) => s.id == song.id || (norm.isNotEmpty && normalizeForDedup(s.title) == norm));
+    _visibleSongs.removeWhere((s) => s.id == song.id || (norm.isNotEmpty && normalizeForDedup(s.title) == norm));
+    _favoriteSongIds.remove(song.id);
+    _cloudLibrarySongs.removeWhere((c) {
+      final cId = c['id']?.toString();
+      final cNorm = normalizeForDedup(c['title'] ?? '');
+      return cId == song.id.toString() || (norm.isNotEmpty && cNorm == norm);
+    });
+
+    // 3. Liberar el archivo del reproductor ANTES de borrarlo físicamente del almacenamiento
+    await _handleSongRemoved(song);
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
+    await _saveHiddenSongs();
+
     if (kIsWeb) {
-      _allSongs.removeWhere((s) => s.id == song.id);
-      _visibleSongs.removeWhere((s) => s.id == song.id);
-      await _handleSongRemoved(song);
       notifyListeners();
       return true;
     }
-    try {
-      final file = File(song.data);
-      if (await file.exists()) {
-        await file.delete();
-      }
-      try {
-        await MediaScanner.loadMedia(path: song.data);
-      } catch (e) {
-        print("MediaScanner error: $e");
-      }
-      _allSongs.removeWhere((s) => s.id == song.id);
-      _visibleSongs.removeWhere((s) => s.id == song.id);
-      _hiddenSongIds.remove(song.id);
-      await _saveHiddenSongs();
-      await _handleSongRemoved(song);
-      return true;
-    } catch (e) {
-      print("Error deleting physical song: $e");
-      await hideSong(song);
-      return false;
+
+    // 4. Eliminar físicamente el archivo en song.data y en cualquier carpeta de NovaMusic
+    bool deletedFile = false;
+    final Set<String> pathsToDelete = {};
+    if (song.data.isNotEmpty) {
+      pathsToDelete.add(song.data);
     }
+
+    final candidateDirs = <String>[
+      '/storage/emulated/0/Music/NovaMusic',
+      '/storage/emulated/0/Download/NovaMusic',
+    ];
+    try {
+      final extMusic = await getExternalStorageDirectories(type: StorageDirectory.music);
+      if (extMusic != null && extMusic.isNotEmpty) {
+        candidateDirs.add('${extMusic.first.path}/NovaMusic');
+      }
+    } catch (_) {}
+    try {
+      final appDoc = await getApplicationDocumentsDirectory();
+      candidateDirs.add('${appDoc.path}/NovaMusic');
+    } catch (_) {}
+
+    if (norm.isNotEmpty) {
+      for (var dirPath in candidateDirs) {
+        try {
+          final d = Directory(dirPath);
+          if (d.existsSync()) {
+            for (var entity in d.listSync().whereType<File>()) {
+              final fName = entity.uri.pathSegments.last
+                  .replaceAll(RegExp(r'\.(mp3|m4a|wav)$', caseSensitive: false), '')
+                  .replaceAll('_', ' ');
+              if (normalizeForDedup(fName) == norm) {
+                pathsToDelete.add(entity.path);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    for (var path in pathsToDelete) {
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+          deletedFile = true;
+        }
+        if (Platform.isAndroid) {
+          try {
+            await MediaScanner.loadMedia(path: path);
+          } catch (_) {}
+        }
+      } catch (e) {
+        print("Error deleting file at $path: $e");
+      }
+    }
+
+    notifyListeners();
+    return deletedFile;
   }
 
   Future<void> unhideSong(SongModel song) async {
-    if (_hiddenSongIds.contains(song.id)) {
-      _hiddenSongIds.remove(song.id);
-      await _saveHiddenSongs();
-      
+    final norm = normalizeForDedup(song.title);
+    _hiddenSongIds.remove(song.id);
+    if (norm.isNotEmpty) {
+      _hiddenSongKeys.remove(norm);
+      _deletedSongKeys.remove(norm);
+    }
+
+    if (!_visibleSongs.any((s) => s.id == song.id)) {
       _visibleSongs.add(song);
       _applySort();
-      
-      _needsPlaylistRebuild = true;
-      notifyListeners();
     }
+
+    // Volver a respaldar en la nube al restaurarla a la lista de canciones
+    if (!isGuest && norm.isNotEmpty) {
+      final inCloud = _cloudLibrarySongs.any((c) => normalizeForDedup(c['title'] ?? '') == norm);
+      if (!inCloud) {
+        _cloudLibrarySongs.add({
+          'id': song.id,
+          'title': song.title,
+          'artist': song.artist ?? 'Artista desconocido',
+          'youtube_id': song.getMap['youtube_id'] ?? '',
+          'duration': song.duration ?? 0,
+          'added_at': DateTime.now().toIso8601String(),
+        });
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
+      }
+    }
+
+    await _saveHiddenSongs();
+    _needsPlaylistRebuild = true;
+    notifyListeners();
   }
 
   Future<void> restoreAllHiddenSongs() async {
     _hiddenSongIds.clear();
+    _hiddenSongKeys.clear();
     await _saveHiddenSongs();
-    
-    _visibleSongs = List.from(_allSongs);
+
+    _visibleSongs = _allSongs.where((s) => !_deletedSongKeys.contains(normalizeForDedup(s.title))).toList();
     _applySort();
-    
+
+    if (!isGuest) {
+      await syncLocalSongsToCloud();
+    }
+
     _needsPlaylistRebuild = true;
     notifyListeners();
   }

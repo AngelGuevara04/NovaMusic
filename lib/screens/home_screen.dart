@@ -2,6 +2,7 @@ import 'playlists_screen.dart';
 import 'cloud_backup_screen.dart';
 import '../widgets/suggestion_dialog.dart';
 import '../widgets/password_dialogs.dart';
+import '../widgets/device_output_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/audio_provider.dart';
@@ -203,16 +204,20 @@ class _HomeScreenState extends State<HomeScreen> {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.cloud_upload_outlined, color: Colors.lightBlueAccent),
-                  title: const Text('Subir canciones locales a mi Nube', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('Respalda la música de este celular para escucharla en otros dispositivos', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  title: const Text('Sobrescribir Nube de 0 (Solo mi lista actual)', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('Limpia canciones viejas/borradas y respalda solo las canciones de tu lista actual', style: TextStyle(color: Colors.white54, fontSize: 12)),
                   onTap: () async {
                     Navigator.pop(ctx);
-                    await provider.syncLocalSongsToCloud();
+                    final ok = await provider.overwriteCloudLibraryWithDeviceSongs();
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text('☁️ Canciones respaldadas en tu Nube de @$username'),
-                          backgroundColor: const Color(0xFF262626),
+                          content: Text(
+                            ok
+                                ? '☁️ Nube actualizada desde 0 con tus ${provider.totalSongsCount} canciones actuales'
+                                : 'Error al actualizar la nube',
+                          ),
+                          backgroundColor: ok ? const Color(0xFF7C4DFF) : Colors.redAccent,
                         ),
                       );
                     }
@@ -479,6 +484,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
               });
             },
+          ),
+          IconButton(
+            icon: const Icon(Icons.speaker_group_outlined, color: Colors.greenAccent),
+            tooltip: 'Cambiar salida de audio entre dispositivos',
+            onPressed: () => showDeviceOutputSwitcherDialog(context),
           ),
           IconButton(
             icon: const Icon(Icons.cloud_download_outlined, color: Colors.white),
@@ -919,6 +929,11 @@ class MiniPlayer extends StatelessWidget {
                       ),
                     ],
                   ),
+                ),
+                IconButton(
+                  tooltip: 'Cambiar salida de audio',
+                  icon: const Icon(Icons.speaker_group_outlined, color: Colors.greenAccent, size: 22),
+                  onPressed: () => showDeviceOutputSwitcherDialog(context),
                 ),
                 IconButton(
                   icon: Icon(
