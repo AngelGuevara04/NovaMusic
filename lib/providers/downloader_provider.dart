@@ -143,17 +143,26 @@ class DownloaderProvider extends ChangeNotifier {
   String? _currentRecommendationArtist;
   String? get currentRecommendationArtist => _currentRecommendationArtist;
 
-  final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
-  
-  bool _initialized = false;
+  static final FlutterLocalNotificationsPlugin notificationsPlugin = FlutterLocalNotificationsPlugin();
+  static Future<void> Function(String actionId)? onDiscoveryNotificationAction;
+  static const int discoveryNotificationId = 888999;
+
+  // Filtro de masterización de estudio en streaming + recorte de silencio al inicio y al final:
+  // - start_periods=1:start_duration=0.05:start_threshold=-44dB -> elimina todo el silencio inicial
+  // - stop_periods=-1:stop_duration=1.8:stop_threshold=-48dB -> elimina silencios muertos al final sin congelar la RAM
+  // - highpass=f=25, acompressor y alimiter -> sonido limpio de estudio a -0.4 dB
+  static const String studioMasterAndTrimSilenceFilter =
+      '-af "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-44dB:stop_periods=-1:stop_duration=1.8:stop_threshold=-48dB,highpass=f=25,acompressor=threshold=-16dB:ratio=2.2:attack=15:release=200:makeup=2.5dB,alimiter=limit=0.95:attack=5:release=50"';
+
+  static bool _initialized = false;
   
   List<DownloadTask> get activeDownloads => _activeDownloads;
 
   DownloaderProvider() {
-    _initNotifications();
+    initNotificationsStatic();
   }
 
-  Future<void> _initNotifications() async {
+  static Future<void> initNotificationsStatic() async {
     if (kIsWeb) return;
     if (_initialized) return;
     
@@ -166,8 +175,108 @@ class DownloaderProvider extends ChangeNotifier {
     const AndroidInitializationSettings initializationSettingsAndroid = AndroidInitializationSettings('@mipmap/launcher_icon');
     const InitializationSettings initializationSettings = InitializationSettings(android: initializationSettingsAndroid);
 
-    await _notificationsPlugin.initialize(settings: initializationSettings);
+    await notificationsPlugin.initialize(
+      settings: initializationSettings,
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
+        final actionId = response.actionId;
+        if (actionId != null && actionId.isNotEmpty && onDiscoveryNotificationAction != null) {
+          onDiscoveryNotificationAction!(actionId);
+        }
+      },
+    );
     _initialized = true;
+  }
+
+  static Future<void> showDiscoveryLoadingNotification(String title, String body) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    await initNotificationsStatic();
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'discovery_channel',
+      'Modo Descubrimiento ✨',
+      channelDescription: 'Recomendaciones inteligentes de música nueva',
+      importance: Importance.low,
+      priority: Priority.low,
+      onlyAlertOnce: true,
+      showProgress: true,
+      indeterminate: true,
+      ongoing: true,
+      autoCancel: false,
+      icon: '@mipmap/launcher_icon',
+    );
+    const NotificationDetails details = NotificationDetails(android: androidDetails);
+    await notificationsPlugin.show(
+      id: discoveryNotificationId,
+      title: title,
+      body: body,
+      notificationDetails: details,
+    );
+  }
+
+  static Future<void> showDiscoveryPlayingNotification({
+    required String songTitle,
+    required String artist,
+    required String seedInfo,
+    bool isSaved = false,
+  }) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    await initNotificationsStatic();
+
+    final List<AndroidNotificationAction> actions = isSaved
+        ? const [
+            AndroidNotificationAction(
+              'discovery_next',
+              '⏭️ Siguiente recomendación',
+              showsUserInterface: false,
+              cancelNotification: false,
+            ),
+          ]
+        : const [
+            AndroidNotificationAction(
+              'discovery_like',
+              '❤️ Me gusta (Guardar)',
+              showsUserInterface: false,
+              cancelNotification: false,
+            ),
+            AndroidNotificationAction(
+              'discovery_dislike',
+              '✕ Quitar',
+              showsUserInterface: false,
+              cancelNotification: false,
+            ),
+          ];
+
+    final AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'discovery_channel',
+      'Modo Descubrimiento ✨',
+      channelDescription: 'Recomendaciones inteligentes con botones Me gusta y Quitar',
+      importance: Importance.high,
+      priority: Priority.high,
+      onlyAlertOnce: true,
+      ongoing: !isSaved,
+      autoCancel: isSaved,
+      icon: '@mipmap/launcher_icon',
+      styleInformation: BigTextStyleInformation(
+        isSaved
+            ? '$artist\n✅ Descargada permanentemente en tu Lista de Canciones ($seedInfo)'
+            : '$artist • $seedInfo\nToca "❤️ Me gusta" para guardarla en tu lista o "✕ Quitar" para no volver a recomendarla.',
+        contentTitle: isSaved ? '✅ Guardada: $songTitle' : '✨ Recomendada: $songTitle',
+      ),
+      actions: actions,
+    );
+    final NotificationDetails details = NotificationDetails(android: androidDetails);
+    await notificationsPlugin.show(
+      id: discoveryNotificationId,
+      title: isSaved ? '✅ Guardada: $songTitle' : '✨ Recomendada: $songTitle',
+      body: '$artist • $seedInfo',
+      notificationDetails: details,
+    );
+  }
+
+  static Future<void> cancelDiscoveryNotification() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      await notificationsPlugin.cancel(id: discoveryNotificationId);
+    } catch (_) {}
   }
 
   String _formatBytes(num bytes) {
@@ -189,7 +298,7 @@ class DownloaderProvider extends ChangeNotifier {
       icon: '@mipmap/launcher_icon',
     );
     NotificationDetails details = NotificationDetails(android: androidDetails);
-    await _notificationsPlugin.show(
+    await notificationsPlugin.show(
       id: task.notifId,
       title: task.title,
       body: body,
@@ -206,7 +315,7 @@ class DownloaderProvider extends ChangeNotifier {
       icon: '@mipmap/launcher_icon',
     );
     const NotificationDetails details = NotificationDetails(android: androidDetails);
-    await _notificationsPlugin.show(
+    await notificationsPlugin.show(
       id: task.notifId,
       title: '✅ ¡Descarga Completada!',
       body: task.title,
@@ -223,7 +332,7 @@ class DownloaderProvider extends ChangeNotifier {
       icon: '@mipmap/launcher_icon',
     );
     const NotificationDetails details = NotificationDetails(android: androidDetails);
-    await _notificationsPlugin.show(
+    await notificationsPlugin.show(
       id: task.notifId,
       title: '❌ Error en la descarga',
       body: task.title,
@@ -574,11 +683,11 @@ class DownloaderProvider extends ChangeNotifier {
     if (await tempAudioFile.exists()) await tempAudioFile.delete();
 
     // Cadena de masterización en tiempo real sin buffering en RAM (evita que FFmpeg se congele):
-    // 1. silenceremove: quita silencio inicial
+    // 1. silenceremove: quita tanto el silencio inicial como el silencio final / muerto
     // 2. highpass=f=25: limpia frecuencias subsónicas que ensucian la mezcla
     // 3. acompressor: acerca las voces/instrumentos lejanos y nivela el volumen
     // 4. alimiter: evita saturación/clipping en picos fuertes (-0.4 dB)
-    String afFilter = '-af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,highpass=f=25,acompressor=threshold=-16dB:ratio=2.2:attack=15:release=200:makeup=2.5dB,alimiter=limit=0.95:attack=5:release=50"';
+    String afFilter = studioMasterAndTrimSilenceFilter;
     String metadata = '-metadata title="$songTitle" -metadata artist="$author"';
     String audioCodecFlags = '-ar 44100 -ac 2 -b:a 320k';
 

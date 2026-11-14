@@ -16,7 +16,11 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:media_scanner/media_scanner.dart';
+import 'package:http/http.dart' as http;
+import 'package:ffmpeg_kit_flutter_audio/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import '../services/equalizer_service.dart';
+import 'downloader_provider.dart';
 
 class AudioProvider with ChangeNotifier {
   final OnAudioQuery _audioQuery = OnAudioQuery();
@@ -27,6 +31,7 @@ class AudioProvider with ChangeNotifier {
   List<int> _hiddenSongIds = [];
   Set<String> _hiddenSongKeys = {};
   Set<String> _deletedSongKeys = {};
+  Set<String> _dislikedDiscoveryKeys = {};
   List<int> _favoriteSongIds = [];
   String? _currentUsername;
   bool _showOnlyFavorites = false;
@@ -38,6 +43,28 @@ class AudioProvider with ChangeNotifier {
   Map<String, dynamic>? _lastRemotePlaybackState;
   String? _lastHandledCommandId;
   SongModel? _currentPlayingSong;
+  bool _isSingleTrackSource = false;
+
+  // ---- Modo Descubrimiento Inteligente (Recomendaciones basadas en descargas) ----
+  bool _isDiscoveryMode = false;
+  bool _isLoadingDiscovery = false;
+  String _discoveryStatusText = '';
+  SongModel? _currentDiscoverySong;
+  Video? _currentDiscoveryVideo;
+  String? _currentDiscoveryTempPath;
+  String _currentDiscoverySeedInfo = '';
+  bool _isCurrentDiscoverySaved = false;
+  final Set<String> _sessionPlayedDiscoveryIds = {};
+  bool _isAutoAdvancing = false;
+
+  bool get isDiscoveryMode => _isDiscoveryMode;
+  bool get isLoadingDiscovery => _isLoadingDiscovery;
+  String get discoveryStatusText => _discoveryStatusText;
+  SongModel? get currentDiscoverySong => _currentDiscoverySong;
+  String get currentDiscoverySeedInfo => _currentDiscoverySeedInfo;
+  bool get isCurrentDiscoverySaved => _isCurrentDiscoverySaved;
+  bool get isPlayingDiscoverySong =>
+      _currentDiscoverySong != null && _currentPlayingSong?.id == _currentDiscoverySong?.id;
 
   String? _deviceId;
   String? get deviceId => _deviceId;
@@ -297,23 +324,53 @@ class AudioProvider with ChangeNotifier {
                   ? 'android'
                   : (Platform.isIOS ? 'ios' : 'desktop')));
 
-      // Agregar este dispositivo
+      final cs = currentSong;
+      final currentSongPayload = cs != null
+          ? <String, dynamic>{
+              '_id': cs.id,
+              'id': cs.id,
+              'title': cs.title,
+              'artist': cs.artist ?? 'Artista desconocido',
+              'duration': cs.duration ?? 0,
+              '_data': cs.data,
+              'youtube_id': cs.getMap['youtube_id'] ?? '',
+            }
+          : null;
+
+      // Agregar este dispositivo con canción completa y posición actual
       activeList.add({
         'id': _deviceId,
         'name': currentDeviceName,
         'platform': platformStr,
         'last_seen': now.toIso8601String(),
         'is_playing': _isPlaying,
-        'song_title': currentSong?.title ?? '',
+        'song_title': cs?.title ?? '',
+        'position_ms': _currentPosition.inMilliseconds,
+        if (currentSongPayload != null) 'song': currentSongPayload,
       });
 
       _connectedDevices = activeList;
       notifyListeners();
 
-      await supabase.from('user_preferences').update({
+      final updateData = <String, dynamic>{
         'connected_devices': activeList,
         'last_active': now.toIso8601String(),
-      }).eq('username', _currentUsername!);
+      };
+      if (_isPlaying && cs != null) {
+        final activeDev = {
+          'device_id': _deviceId,
+          'device_name': currentDeviceName,
+          'is_playing': true,
+          'song_title': cs.title,
+          'position_ms': _currentPosition.inMilliseconds,
+          'song': currentSongPayload,
+          'updated_at': now.toIso8601String(),
+        };
+        _activeCloudDevice = activeDev;
+        updateData['active_device'] = activeDev;
+      }
+
+      await supabase.from('user_preferences').update(updateData).eq('username', _currentUsername!);
     } catch (_) {}
   }
 
@@ -417,42 +474,77 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
+  int _findBestMatchingSongIndex(List<SongModel> list, String targetIdStr, String targetTitle, String targetArtist) {
+    final normTarget = normalizeForDedup(targetTitle);
+    final normFull = normalizeForDedup('$targetArtist $targetTitle');
+
+    // 1. Coincidencia exacta por título normalizado
+    if (normTarget.isNotEmpty) {
+      final exactIdx = list.indexWhere((s) => normalizeForDedup(s.title) == normTarget);
+      if (exactIdx != -1) return exactIdx;
+
+      // 2. Coincidencia combinando artista + título (p. ej. "Autor - Canción" vs título="Canción", artista="Autor")
+      final fullIdx = list.indexWhere((s) {
+        final sNormTitle = normalizeForDedup(s.title);
+        final sNormFull = normalizeForDedup('${s.artist ?? ""} ${s.title}');
+        return sNormFull == normFull || sNormTitle == normFull || sNormFull == normTarget;
+      });
+      if (fullIdx != -1) return fullIdx;
+
+      // 3. Coincidencia por contención de subcadena (para títulos largos con o sin artista)
+      if (normTarget.length >= 5) {
+        final subIdx = list.indexWhere((s) {
+          final sNorm = normalizeForDedup(s.title);
+          return sNorm.length >= 5 && (sNorm.contains(normTarget) || normTarget.contains(sNorm));
+        });
+        if (subIdx != -1) return subIdx;
+      }
+    }
+
+    // 4. Respaldo por ID exacto
+    if (targetIdStr.isNotEmpty) {
+      final idIdx = list.indexWhere((s) => s.id.toString() == targetIdStr);
+      if (idIdx != -1) return idIdx;
+    }
+
+    return -1;
+  }
+
   Future<void> _playTransferredSong(Map<String, dynamic> songMap, int posMs) async {
     final targetIdStr = (songMap['_id'] ?? songMap['id'] ?? '').toString();
     final targetTitle = (songMap['title'] ?? '').toString();
-    final normTarget = normalizeForDedup(targetTitle);
+    final targetArtist = (songMap['artist'] ?? '').toString();
 
-    int songIdx = songs.indexWhere((s) =>
-        s.id.toString() == targetIdStr ||
-        (normTarget.isNotEmpty && normalizeForDedup(s.title) == normTarget));
+    int songIdx = _findBestMatchingSongIndex(songs, targetIdStr, targetTitle, targetArtist);
+
+    // Si hay un filtro de búsqueda o favoritos activo que oculta la canción, quitar el filtro para reproducirla
+    if (songIdx == -1 && (_showOnlyFavorites || _searchQuery.isNotEmpty)) {
+      final visibleIdx = _findBestMatchingSongIndex(_visibleSongs, targetIdStr, targetTitle, targetArtist);
+      if (visibleIdx != -1) {
+        _showOnlyFavorites = false;
+        _searchQuery = '';
+        _needsPlaylistRebuild = true;
+        songIdx = _findBestMatchingSongIndex(songs, targetIdStr, targetTitle, targetArtist);
+      }
+    }
+
+    final initialPos = posMs > 0 ? Duration(milliseconds: posMs) : Duration.zero;
 
     if (songIdx != -1) {
-      await playSong(songIdx);
-      if (posMs > 0) {
-        try {
-          await _audioPlayer.seek(Duration(milliseconds: posMs));
-        } catch (_) {}
-      }
+      await playSong(songIdx, initialPosition: initialPos);
     } else {
-      // Si la canción no estaba en la lista local de este dispositivo, reproducirla desde la nube
+      // Si la canción no está en la lista local de este dispositivo, reproducirla directamente desde la nube
+      // sin insertarla en la posición 0 para no alterar los índices de la lista
       final tempSong = SongModel({
         '_id': int.tryParse(targetIdStr) ?? DateTime.now().millisecondsSinceEpoch,
         'title': targetTitle.isNotEmpty ? targetTitle : 'Canción transferida',
-        'artist': songMap['artist'] ?? 'En la Nube ☁️',
+        'artist': targetArtist.isNotEmpty ? targetArtist : 'En la Nube ☁️',
         'duration': songMap['duration'] is int ? songMap['duration'] : 0,
         '_data': songMap['_data'] ?? songMap['url'] ?? '',
         'is_cloud': true,
         'youtube_id': songMap['youtube_id'] ?? '',
       });
-      _visibleSongs.insert(0, tempSong);
-      _allSongs.insert(0, tempSong);
-      notifyListeners();
-      await _playCloudSong(tempSong, 0);
-      if (posMs > 0) {
-        try {
-          await _audioPlayer.seek(Duration(milliseconds: posMs));
-        } catch (_) {}
-      }
+      await _playCloudSong(tempSong, -1, initialPosition: initialPos);
     }
   }
 
@@ -497,33 +589,128 @@ class AudioProvider with ChangeNotifier {
         .trim();
   }
 
+  SongModel? _resolveSongFromRemoteTitle(String rawTitle, {Map<String, dynamic>? fallbackMap}) {
+    if (fallbackMap != null && (fallbackMap['title'] ?? '').toString().trim().isNotEmpty) {
+      final tTitle = fallbackMap['title'].toString();
+      final tArtist = (fallbackMap['artist'] ?? '').toString();
+      final tId = (fallbackMap['_id'] ?? fallbackMap['id'] ?? '').toString();
+      final idx = _findBestMatchingSongIndex(_visibleSongs, tId, tTitle, tArtist);
+      if (idx != -1) return _visibleSongs[idx];
+      return SongModel({
+        '_id': int.tryParse(tId) ?? DateTime.now().millisecondsSinceEpoch,
+        'title': tTitle,
+        'artist': tArtist.isNotEmpty ? tArtist : 'Artista desconocido',
+        'duration': fallbackMap['duration'] is int ? fallbackMap['duration'] : 0,
+        '_data': fallbackMap['_data'] ?? fallbackMap['url'] ?? '',
+        'is_cloud': true,
+        'youtube_id': fallbackMap['youtube_id'] ?? '',
+      });
+    }
+    if (rawTitle.trim().isEmpty) return null;
+    final idx = _findBestMatchingSongIndex(_visibleSongs, '', rawTitle, '');
+    if (idx != -1) return _visibleSongs[idx];
+    final allIdx = _findBestMatchingSongIndex(_allSongs, '', rawTitle, '');
+    if (allIdx != -1) return _allSongs[allIdx];
+    final norm = normalizeForDedup(rawTitle);
+    final cloudMatch = _cloudLibrarySongs.firstWhere(
+      (c) => normalizeForDedup(c['title'] ?? '') == norm,
+      orElse: () => {},
+    );
+    if (cloudMatch.isNotEmpty) {
+      return SongModel({
+        '_id': int.tryParse(cloudMatch['id']?.toString() ?? '') ?? DateTime.now().millisecondsSinceEpoch,
+        'title': cloudMatch['title'] ?? rawTitle,
+        'artist': cloudMatch['artist'] ?? 'Artista desconocido',
+        'duration': cloudMatch['duration'] is int ? cloudMatch['duration'] : 0,
+        '_data': cloudMatch['url'] ?? '',
+        'is_cloud': true,
+        'youtube_id': cloudMatch['youtube_id'] ?? '',
+      });
+    }
+    return SongModel({
+      '_id': DateTime.now().millisecondsSinceEpoch,
+      'title': rawTitle,
+      'artist': 'En la Nube ☁️',
+      'duration': 0,
+      '_data': '',
+      'is_cloud': true,
+      'youtube_id': '',
+    });
+  }
+
   Future<void> switchAudioOutput(String targetDeviceId) async {
     if (_currentUsername == null || _currentUsername!.isEmpty) return;
     if (_deviceId == null) await _initDeviceId();
 
-    SongModel? songToTransfer = currentSong;
-    int positionMs = _currentPosition.inMilliseconds;
+    // Sincronizar primero con la nube para tener el estado más reciente del otro dispositivo
+    await _pollCloudPlaybackAndDevices();
 
-    // Si en este dispositivo no hay canción cargada pero otro dispositivo está reproduciendo,
-    // usar la canción del estado remoto o la primera de la lista
-    if (songToTransfer == null && _lastRemotePlaybackState != null && _lastRemotePlaybackState!['song'] is Map) {
-      final remoteSongMap = Map<String, dynamic>.from(_lastRemotePlaybackState!['song'] as Map);
-      songToTransfer = SongModel(remoteSongMap);
-      positionMs = (_lastRemotePlaybackState!['position_ms'] is num)
-          ? (_lastRemotePlaybackState!['position_ms'] as num).toInt()
-          : 0;
-    } else if (songToTransfer == null && _activeCloudDevice != null) {
-      final activeTitle = (_activeCloudDevice!['song_title'] ?? '').toString();
-      if (activeTitle.isNotEmpty) {
-        final norm = normalizeForDedup(activeTitle);
-        final matchIdx = songs.indexWhere((s) => normalizeForDedup(s.title) == norm);
-        if (matchIdx != -1) {
-          songToTransfer = songs[matchIdx];
+    SongModel? songToTransfer;
+    int positionMs = 0;
+
+    // 1. Si ESTE dispositivo está reproduciendo activamente ahora mismo, transferir su canción actual
+    if (_isPlaying && currentSong != null) {
+      songToTransfer = currentSong;
+      positionMs = _currentPosition.inMilliseconds;
+    }
+
+    // 2. Si este dispositivo NO está reproduciendo, buscar qué canción está sonando en el otro dispositivo activo
+    if (songToTransfer == null) {
+      // Buscar primero en connected_devices algún dispositivo remoto con is_playing == true
+      final playingRemoteDev = _connectedDevices.firstWhere(
+        (d) => d['id'] != _deviceId && d['is_playing'] == true && ((d['song_title'] ?? '').toString().isNotEmpty || d['song'] is Map),
+        orElse: () => {},
+      );
+      if (playingRemoteDev.isNotEmpty) {
+        final remoteSongMap = playingRemoteDev['song'] is Map
+            ? Map<String, dynamic>.from(playingRemoteDev['song'] as Map)
+            : null;
+        songToTransfer = _resolveSongFromRemoteTitle(
+          (playingRemoteDev['song_title'] ?? '').toString(),
+          fallbackMap: remoteSongMap,
+        );
+        if (playingRemoteDev['position_ms'] is num) {
+          positionMs = (playingRemoteDev['position_ms'] as num).toInt();
         }
       }
     }
+
+    // 3. Revisar _activeCloudDevice si pertenece a otro dispositivo o tiene canción activa
+    if (songToTransfer == null && _activeCloudDevice != null) {
+      final activeTitle = (_activeCloudDevice!['song_title'] ?? '').toString();
+      final activeSongMap = _activeCloudDevice!['song'] is Map
+          ? Map<String, dynamic>.from(_activeCloudDevice!['song'] as Map)
+          : null;
+      if (activeTitle.isNotEmpty || activeSongMap != null) {
+        songToTransfer = _resolveSongFromRemoteTitle(activeTitle, fallbackMap: activeSongMap);
+        if (_activeCloudDevice!['position_ms'] is num) {
+          positionMs = (_activeCloudDevice!['position_ms'] as num).toInt();
+        }
+      }
+    }
+
+    // 4. Si en este dispositivo hay una canción seleccionada (aunque esté en pausa), usarla antes que estados viejos
+    if (songToTransfer == null && currentSong != null) {
+      songToTransfer = currentSong;
+      positionMs = _currentPosition.inMilliseconds;
+    }
+
+    // 5. Respaldo del último playback_state remoto
+    if (songToTransfer == null && _lastRemotePlaybackState != null && _lastRemotePlaybackState!['song'] is Map) {
+      final remoteSongMap = Map<String, dynamic>.from(_lastRemotePlaybackState!['song'] as Map);
+      songToTransfer = _resolveSongFromRemoteTitle(
+        (remoteSongMap['title'] ?? '').toString(),
+        fallbackMap: remoteSongMap,
+      );
+      positionMs = (_lastRemotePlaybackState!['position_ms'] is num)
+          ? (_lastRemotePlaybackState!['position_ms'] as num).toInt()
+          : 0;
+    }
+
+    // 6. Último recurso: primera canción de la lista
     if (songToTransfer == null && songs.isNotEmpty) {
       songToTransfer = songs.first;
+      positionMs = 0;
     }
     if (songToTransfer == null) return;
 
@@ -554,6 +741,8 @@ class AudioProvider with ChangeNotifier {
         'device_name': targetName,
         'is_playing': true,
         'song_title': songToTransfer.title,
+        'position_ms': positionMs,
+        'song': songPayload,
         'updated_at': nowIso,
       };
       final newPlaybackState = {
@@ -748,14 +937,30 @@ class AudioProvider with ChangeNotifier {
 
     try {
       final supabase = Supabase.instance.client;
+      final cs = currentSong;
+      final songPayload = cs != null
+          ? <String, dynamic>{
+              '_id': cs.id,
+              'id': cs.id,
+              'title': cs.title,
+              'artist': cs.artist ?? 'Artista desconocido',
+              'duration': cs.duration ?? 0,
+              '_data': cs.data,
+              'youtube_id': cs.getMap['youtube_id'] ?? '',
+            }
+          : null;
+      final activeDev = <String, dynamic>{
+        'device_id': _deviceId,
+        'device_name': currentDeviceName,
+        'is_playing': _isPlaying,
+        'song_title': cs?.title ?? '',
+        'position_ms': _currentPosition.inMilliseconds,
+        if (songPayload != null) 'song': songPayload,
+        'updated_at': DateTime.now().toIso8601String(),
+      };
+      _activeCloudDevice = activeDev;
       await supabase.from('user_preferences').update({
-        'active_device': {
-          'device_id': _deviceId,
-          'device_name': currentDeviceName,
-          'is_playing': _isPlaying,
-          'song_title': currentSong?.title ?? '',
-          'updated_at': DateTime.now().toIso8601String(),
-        },
+        'active_device': activeDev,
         'last_active': DateTime.now().toIso8601String(),
       }).eq('username', username);
     } catch (_) {}
@@ -805,6 +1010,18 @@ class AudioProvider with ChangeNotifier {
     // Configurar sesión de audio profesional para manejar foco y segundo plano
     await _setupAudioSession();
     await _initDeviceId();
+
+    // Conectar botones interactivos de la notificación de Modo Descubrimiento (❤️ Me gusta / ✕ Quitar)
+    await DownloaderProvider.initNotificationsStatic();
+    DownloaderProvider.onDiscoveryNotificationAction = (String actionId) async {
+      if (actionId == 'discovery_like') {
+        await likeCurrentDiscoverySong();
+      } else if (actionId == 'discovery_dislike') {
+        await dislikeCurrentDiscoverySong();
+      } else if (actionId == 'discovery_next') {
+        await playNextDiscoverySong();
+      }
+    };
 
     _currentUsername = prefs.getString('current_username');
     final cachedLib = prefs.getString('cached_library_songs');
@@ -883,6 +1100,20 @@ class AudioProvider with ChangeNotifier {
           EqualizerService.init(sessionId);
         }
       }
+      if (state.processingState == ProcessingState.completed && !_isAutoAdvancing) {
+        _isAutoAdvancing = true;
+        Future.microtask(() async {
+          try {
+            if (_isDiscoveryMode) {
+              await playNextDiscoverySong();
+            } else if (_isSingleTrackSource && songs.isNotEmpty) {
+              await nextSong();
+            }
+          } finally {
+            _isAutoAdvancing = false;
+          }
+        });
+      }
       notifyListeners();
     });
 
@@ -897,12 +1128,36 @@ class AudioProvider with ChangeNotifier {
     });
 
     _audioPlayer.currentIndexStream.listen((index) {
-      if (index != null && index != _currentIndex) {
-        _currentIndex = index;
-        if (index >= 0 && index < songs.length) {
+      // Si se está reproduciendo una pista única (Nube o Modo Descubrimiento), just_audio emite index=0.
+      // Ignorarlo para NUNCA sobrescribir la canción activa con songs[0].
+      if (_isSingleTrackSource || _playlist == null) return;
+
+      if (index != null && index >= 0 && index < _playlist!.children.length) {
+        try {
+          final tag = (_playlist!.children[index] as UriAudioSource).tag as MediaItem;
+          final matchedIdx = songs.indexWhere((s) => s.id.toString() == tag.id);
+          if (matchedIdx != -1) {
+            final changed = _currentIndex != matchedIdx || _currentPlayingSong?.id != songs[matchedIdx].id;
+            _currentIndex = matchedIdx;
+            _currentPlayingSong = songs[matchedIdx];
+            if (changed) {
+              notifyListeners();
+              if (_isPlaying) {
+                updateActiveDeviceInCloud();
+              }
+            }
+            return;
+          }
+        } catch (_) {}
+
+        if (index != _currentIndex && index < songs.length) {
+          _currentIndex = index;
           _currentPlayingSong = songs[index];
+          notifyListeners();
+          if (_isPlaying) {
+            updateActiveDeviceInCloud();
+          }
         }
-        notifyListeners();
       }
     });
   }
@@ -913,12 +1168,15 @@ class AudioProvider with ChangeNotifier {
     _hiddenSongIds = [];
     _hiddenSongKeys = (prefs.getStringList('hidden_song_keys') ?? []).toSet();
     _deletedSongKeys = (prefs.getStringList('permanently_deleted_songs') ?? []).toSet();
+    _dislikedDiscoveryKeys = (prefs.getStringList('disliked_discovery_songs') ?? []).toSet();
 
     for (var entry in hiddenList) {
       if (entry.startsWith('key:')) {
         _hiddenSongKeys.add(entry.substring(4));
       } else if (entry.startsWith('del:')) {
         _deletedSongKeys.add(entry.substring(4));
+      } else if (entry.startsWith('dislike:')) {
+        _dislikedDiscoveryKeys.add(entry.substring(8));
       } else {
         final parsed = int.tryParse(entry);
         if (parsed != null) _hiddenSongIds.add(parsed);
@@ -939,7 +1197,7 @@ class AudioProvider with ChangeNotifier {
       if (response != null) {
         final prefs = await SharedPreferences.getInstance();
 
-        // 1. Ocultas y Eliminadas
+        // 1. Ocultas, Eliminadas y Recomendaciones Descartadas (✕)
         if (response['hidden_songs'] != null) {
           List<dynamic> hidden = response['hidden_songs'];
           _hiddenSongIds = [];
@@ -949,6 +1207,8 @@ class AudioProvider with ChangeNotifier {
               _hiddenSongKeys.add(s.substring(4));
             } else if (s.startsWith('del:')) {
               _deletedSongKeys.add(s.substring(4));
+            } else if (s.startsWith('dislike:')) {
+              _dislikedDiscoveryKeys.add(s.substring(8));
             } else {
               final id = int.tryParse(s);
               if (id != null) _hiddenSongIds.add(id);
@@ -957,6 +1217,7 @@ class AudioProvider with ChangeNotifier {
           await prefs.setStringList('hidden_songs', _hiddenSongIds.map((e) => e.toString()).toList());
           await prefs.setStringList('hidden_song_keys', _hiddenSongKeys.toList());
           await prefs.setStringList('permanently_deleted_songs', _deletedSongKeys.toList());
+          await prefs.setStringList('disliked_discovery_songs', _dislikedDiscoveryKeys.toList());
         }
 
         // 2. Favoritas
@@ -1036,11 +1297,13 @@ class AudioProvider with ChangeNotifier {
     await prefs.setStringList('hidden_songs', idStrings);
     await prefs.setStringList('hidden_song_keys', _hiddenSongKeys.toList());
     await prefs.setStringList('permanently_deleted_songs', _deletedSongKeys.toList());
+    await prefs.setStringList('disliked_discovery_songs', _dislikedDiscoveryKeys.toList());
 
     final combinedForCloud = <String>[
       ...idStrings,
       ..._hiddenSongKeys.map((k) => 'key:$k'),
       ..._deletedSongKeys.map((k) => 'del:$k'),
+      ..._dislikedDiscoveryKeys.map((k) => 'dislike:$k'),
     ];
 
     // Sync to Supabase
@@ -1360,17 +1623,20 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> _setupAudioSource({int initialIndex = 0, Duration initialPosition = Duration.zero}) async {
-    if (_visibleSongs.isEmpty) {
+    final currentList = songs;
+    if (currentList.isEmpty) {
       await _audioPlayer.stop();
       _playlist = null;
       _currentIndex = null;
       return;
     }
 
-    final validIndex = (initialIndex >= 0 && initialIndex < _visibleSongs.length) ? initialIndex : 0;
+    final validIndex = (initialIndex >= 0 && initialIndex < currentList.length) ? initialIndex : 0;
+    _isSingleTrackSource = false;
+    _currentPlayingSong = currentList[validIndex];
 
     _playlist = ConcatenatingAudioSource(
-      children: songs.map((song) {
+      children: currentList.map((song) {
         final artistName = (song.artist != null && song.artist!.isNotEmpty && song.artist != '<unknown>')
             ? song.artist!
             : 'Artista desconocido';
@@ -1399,14 +1665,29 @@ class AudioProvider with ChangeNotifier {
         initialPosition: initialPosition,
       );
       _currentIndex = validIndex;
+      _currentPlayingSong = currentList[validIndex];
       _needsPlaylistRebuild = false;
     } catch (e) {
       print("Error setting audio source: $e");
     }
   }
 
-  Future<void> _playCloudSong(SongModel song, int index) async {
+  Future<void> _playCloudSong(
+    SongModel song,
+    int index, {
+    Duration initialPosition = Duration.zero,
+    bool keepDiscoveryState = false,
+  }) async {
     try {
+      if (!keepDiscoveryState && _isDiscoveryMode) {
+        _isDiscoveryMode = false;
+        _currentDiscoverySong = null;
+        _currentDiscoveryVideo = null;
+        await _cleanupUnsavedDiscoveryTempFile();
+        await DownloaderProvider.cancelDiscoveryNotification();
+      }
+
+      _isSingleTrackSource = true;
       _currentIndex = index;
       _currentPlayingSong = song;
       _isPlaying = false;
@@ -1417,7 +1698,7 @@ class AudioProvider with ChangeNotifier {
         id: song.id.toString(),
         title: song.title,
         artist: (song.artist != null && song.artist!.isNotEmpty) ? song.artist! : 'En la Nube ☁️',
-        album: 'NovaMusic Nube',
+        album: keepDiscoveryState ? _currentDiscoverySeedInfo : 'NovaMusic Nube',
       );
 
       String ytId = song.getMap['youtube_id']?.toString() ?? '';
@@ -1429,11 +1710,20 @@ class AudioProvider with ChangeNotifier {
           '/api/stream?id=${Uri.encodeComponent(ytId)}&q=${Uri.encodeComponent(queryStr)}',
         );
         final source = AudioSource.uri(streamUri, tag: mediaItem);
-        await _audioPlayer.setAudioSource(source).timeout(const Duration(seconds: 15));
+        await _audioPlayer
+            .setAudioSource(source, initialPosition: initialPosition)
+            .timeout(const Duration(seconds: 15));
+        _currentIndex = index;
+        _currentPlayingSong = song;
         _isConnectingCloudStream = false;
         _isPlaying = true;
         notifyListeners();
         await _audioPlayer.play();
+        if (initialPosition > Duration.zero) {
+          try {
+            await _audioPlayer.seek(initialPosition);
+          } catch (_) {}
+        }
         updateActiveDeviceInCloud();
         return;
       }
@@ -1485,11 +1775,20 @@ class AudioProvider with ChangeNotifier {
         tag: mediaItem,
       );
 
-      await _audioPlayer.setAudioSource(source).timeout(const Duration(seconds: 12));
+      await _audioPlayer
+          .setAudioSource(source, initialPosition: initialPosition)
+          .timeout(const Duration(seconds: 12));
+      _currentIndex = index;
+      _currentPlayingSong = song;
       _isConnectingCloudStream = false;
       _isPlaying = true;
       notifyListeners();
       await _audioPlayer.play();
+      if (initialPosition > Duration.zero) {
+        try {
+          await _audioPlayer.seek(initialPosition);
+        } catch (_) {}
+      }
       updateActiveDeviceInCloud();
     } catch (e) {
       _isConnectingCloudStream = false;
@@ -1498,34 +1797,51 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
-  Future<void> playSong(int index) async {
-    if (index < 0 || index >= songs.length) return;
+  Future<void> playSong(int index, {Duration initialPosition = Duration.zero}) async {
+    final currentList = songs;
+    if (index < 0 || index >= currentList.length) return;
 
-    final targetSong = songs[index];
+    // Si estaba en Modo Descubrimiento y el usuario toca una canción de su lista, salir de Descubrimiento
+    if (_isDiscoveryMode || _currentDiscoverySong != null) {
+      _isDiscoveryMode = false;
+      _currentDiscoverySong = null;
+      _currentDiscoveryVideo = null;
+      await _cleanupUnsavedDiscoveryTempFile();
+      await DownloaderProvider.cancelDiscoveryNotification();
+    }
+
+    final targetSong = currentList[index];
     _currentPlayingSong = targetSong;
+    _currentIndex = index;
 
     if (isCloudSong(targetSong)) {
-      await _playCloudSong(targetSong, index);
+      await _playCloudSong(targetSong, index, initialPosition: initialPosition);
       return;
     }
 
-    if (_playlist == null || _needsPlaylistRebuild) {
-      await _setupAudioSource(initialIndex: index);
-    } else if (_currentIndex != index) {
+    if (_playlist == null || _needsPlaylistRebuild || _isSingleTrackSource) {
+      await _setupAudioSource(initialIndex: index, initialPosition: initialPosition);
+    } else {
       try {
-        await _audioPlayer.seek(Duration.zero, index: index);
+        await _audioPlayer.seek(initialPosition, index: index);
       } catch (e) {
-        await _setupAudioSource(initialIndex: index);
+        await _setupAudioSource(initialIndex: index, initialPosition: initialPosition);
       }
     }
     
     _currentIndex = index;
+    _currentPlayingSong = targetSong;
     try {
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
         final session = await AudioSession.instance;
         await session.setActive(true);
       }
       await _audioPlayer.play();
+      if (initialPosition > Duration.zero && (_audioPlayer.position - initialPosition).abs().inSeconds > 2) {
+        try {
+          await _audioPlayer.seek(initialPosition);
+        } catch (_) {}
+      }
       updateActiveDeviceInCloud();
     } catch (e) {
       print("Error playing song: $e");
@@ -1549,15 +1865,582 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> nextSong() async {
-    if (_audioPlayer.hasNext) {
+    if (_isDiscoveryMode) {
+      await playNextDiscoverySong();
+      return;
+    }
+    if (!_isSingleTrackSource && _audioPlayer.hasNext) {
       await _audioPlayer.seekToNext();
+      updateActiveDeviceInCloud();
+      return;
+    }
+    final currentList = songs;
+    if (currentList.isNotEmpty) {
+      int nextIdx;
+      if (_isShuffle && currentList.length > 1) {
+        nextIdx = Random().nextInt(currentList.length);
+      } else {
+        nextIdx = ((_currentIndex ?? -1) + 1) % currentList.length;
+      }
+      await playSong(nextIdx);
     }
   }
 
   Future<void> previousSong() async {
-    if (_audioPlayer.hasPrevious) {
-      await _audioPlayer.seekToPrevious();
+    if (_currentPosition.inSeconds > 3) {
+      await _audioPlayer.seek(Duration.zero);
+      return;
     }
+    if (!_isSingleTrackSource && _audioPlayer.hasPrevious) {
+      await _audioPlayer.seekToPrevious();
+      updateActiveDeviceInCloud();
+      return;
+    }
+    final currentList = songs;
+    if (currentList.isNotEmpty) {
+      final prevIdx = ((_currentIndex ?? 1) - 1 + currentList.length) % currentList.length;
+      await playSong(prevIdx);
+    }
+  }
+
+  // ===========================================================================
+  // MODO DESCUBRIMIENTO INTELIGENTE (Basado en la música descargada del usuario)
+  // ===========================================================================
+
+  Future<void> _cleanupUnsavedDiscoveryTempFile() async {
+    if (_currentDiscoveryTempPath != null && !_isCurrentDiscoverySaved) {
+      final oldPath = _currentDiscoveryTempPath!;
+      _currentDiscoveryTempPath = null;
+      try {
+        final f = File(oldPath);
+        if (await f.exists()) {
+          await f.delete();
+        }
+      } catch (_) {}
+    } else {
+      _currentDiscoveryTempPath = null;
+    }
+  }
+
+  Future<void> toggleDiscoveryMode() async {
+    if (_isDiscoveryMode) {
+      await stopDiscoveryMode();
+    } else {
+      await startDiscoveryMode();
+    }
+  }
+
+  Future<void> startDiscoveryMode() async {
+    _isDiscoveryMode = true;
+    notifyListeners();
+    await playNextDiscoverySong();
+  }
+
+  Future<void> stopDiscoveryMode() async {
+    _isDiscoveryMode = false;
+    _isLoadingDiscovery = false;
+    _discoveryStatusText = '';
+    final wasDiscovery = isPlayingDiscoverySong;
+    _currentDiscoverySong = null;
+    _currentDiscoveryVideo = null;
+    await _cleanupUnsavedDiscoveryTempFile();
+    await DownloaderProvider.cancelDiscoveryNotification();
+    if (wasDiscovery) {
+      await _audioPlayer.stop();
+      _isPlaying = false;
+      _currentPlayingSong = null;
+    }
+    notifyListeners();
+  }
+
+  bool _isGenericArtistName(String? artist) {
+    if (artist == null) return true;
+    final lower = artist.toLowerCase().trim();
+    return lower.isEmpty ||
+        lower == '<unknown>' ||
+        lower.contains('desconocido') ||
+        lower.contains('novamusic') ||
+        lower.contains('descargado') ||
+        lower.contains('en la nube') ||
+        lower.contains('audio');
+  }
+
+  bool _isSongAlreadyInLibraryOrDisliked(Video candidate) {
+    final vidId = candidate.id.value;
+    if (_sessionPlayedDiscoveryIds.contains(vidId)) return true;
+    if (_dislikedDiscoveryKeys.contains('id:$vidId')) return true;
+
+    final rawTitle = candidate.title;
+    final normFull = normalizeForDedup(rawTitle);
+    if (normFull.isEmpty) return true;
+
+    // Si el título viene como "Artista - Canción", extraer también solo la parte de la canción
+    String songPart = rawTitle;
+    if (rawTitle.contains(' - ')) {
+      final parts = rawTitle.split(' - ');
+      if (parts.length >= 2) {
+        songPart = parts.sublist(1).join(' - ');
+      }
+    }
+    final normSongOnly = normalizeForDedup(songPart);
+
+    if (_dislikedDiscoveryKeys.contains(normFull) ||
+        (normSongOnly.isNotEmpty && _dislikedDiscoveryKeys.contains(normSongOnly)) ||
+        _hiddenSongKeys.contains(normFull) ||
+        _deletedSongKeys.contains(normFull)) {
+      return true;
+    }
+
+    // Verificar que NO esté ya descargada en el celular ni en la lista de canciones
+    final allCheck = <SongModel>[..._visibleSongs, ..._allSongs];
+    for (var s in allCheck) {
+      if (s.getMap['youtube_id']?.toString() == vidId) return true;
+      final sNorm = normalizeForDedup(s.title);
+      if (sNorm.isEmpty) continue;
+      if (sNorm == normFull || (normSongOnly.isNotEmpty && sNorm == normSongOnly)) {
+        return true;
+      }
+      if (sNorm.length >= 6 && normSongOnly.length >= 6) {
+        if (sNorm.contains(normSongOnly) || normSongOnly.contains(sNorm)) {
+          return true;
+        }
+      }
+    }
+
+    for (var c in _cloudLibrarySongs) {
+      if (c['youtube_id']?.toString() == vidId) return true;
+      final cNorm = normalizeForDedup(c['title']?.toString() ?? '');
+      if (cNorm.isNotEmpty && (cNorm == normFull || cNorm == normSongOnly)) return true;
+    }
+
+    return false;
+  }
+
+  Future<void> playNextDiscoverySong() async {
+    if (_isLoadingDiscovery) return;
+
+    _isDiscoveryMode = true;
+    _isLoadingDiscovery = true;
+    _isCurrentDiscoverySaved = false;
+    _discoveryStatusText = 'Analizando tu música descargada...';
+    notifyListeners();
+
+    await _cleanupUnsavedDiscoveryTempFile();
+    await DownloaderProvider.showDiscoveryLoadingNotification(
+      '✨ Modo Descubrimiento',
+      'Analizando tus canciones descargadas para recomendarte música nueva...',
+    );
+
+    try {
+      final rand = Random();
+      final sourcePool = <SongModel>[
+        ..._visibleSongs,
+        // Dar doble peso a las canciones favoritas del usuario
+        ...favoriteSongs,
+      ];
+
+      String targetArtist = '';
+      String seedLabel = 'Tu biblioteca';
+      String seedSongNorm = '';
+
+      if (sourcePool.isNotEmpty) {
+        final seedSong = sourcePool[rand.nextInt(sourcePool.length)];
+        seedSongNorm = normalizeForDedup(seedSong.title);
+        final rawArtist = seedSong.artist?.trim() ?? '';
+
+        if (!_isGenericArtistName(rawArtist)) {
+          targetArtist = rawArtist;
+          seedLabel = rawArtist;
+        } else if (seedSong.title.contains(' - ')) {
+          final parts = seedSong.title.split(' - ');
+          if (parts.first.trim().length >= 2) {
+            targetArtist = parts.first.trim();
+            seedLabel = targetArtist;
+          }
+        }
+
+        // Si el archivo solo tiene el nombre de la canción sin artista, descubrir su autor en YouTube
+        if (targetArtist.isEmpty) {
+          seedLabel = seedSong.title.trim();
+          _discoveryStatusText = 'Identificando estilo de "$seedLabel"...';
+          notifyListeners();
+          try {
+            final probe = await _ytCloud.search
+                .search('${seedSong.title} official audio')
+                .timeout(const Duration(seconds: 8));
+            if (probe.isNotEmpty) {
+              targetArtist = probe.first.author
+                  .replaceAll(RegExp(r'-\s*Topic', caseSensitive: false), '')
+                  .replaceAll('VEVO', '')
+                  .replaceAll('Official', '')
+                  .trim();
+              if (targetArtist.isNotEmpty) {
+                seedLabel = '$targetArtist (${seedSong.title})';
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      // Construir consultas variadas para descubrir canciones nuevas de esos artistas o estilo
+      final List<String> queries = [];
+      if (targetArtist.isNotEmpty) {
+        final modifiers = [
+          '$targetArtist canciones official audio',
+          '$targetArtist exitos official audio',
+          '$targetArtist official audio',
+          '$targetArtist mix audio oficial',
+        ];
+        modifiers.shuffle(rand);
+        queries.addAll(modifiers);
+      } else if (seedLabel != 'Tu biblioteca') {
+        queries.add('$seedLabel mix official audio');
+      } else {
+        queries.add('exitos musica popular official audio');
+      }
+
+      _discoveryStatusText = 'Buscando recomendación basada en $seedLabel...';
+      notifyListeners();
+
+      Video? chosenVideo;
+      for (final q in queries) {
+        try {
+          final results = await _ytCloud.search.search(q).timeout(const Duration(seconds: 10));
+          final candidates = results.where((v) {
+            if (DownloaderProvider.isLiveOrLowQuality(v)) return false;
+            final dur = v.duration;
+            if (dur != null && (dur.inSeconds < 65 || dur.inMinutes > 9)) return false;
+            if (seedSongNorm.isNotEmpty && normalizeForDedup(v.title) == seedSongNorm) return false;
+            if (_isSongAlreadyInLibraryOrDisliked(v)) return false;
+            return true;
+          }).toList();
+
+          if (candidates.isNotEmpty) {
+            candidates.sort((a, b) =>
+                DownloaderProvider.getAudioQualityScore(b).compareTo(DownloaderProvider.getAudioQualityScore(a)));
+            // Elegir entre las 3 mejores pistas de estudio para dar variedad manteniendo máxima calidad
+            final topCount = min(3, candidates.length);
+            chosenVideo = candidates[rand.nextInt(topCount)];
+            break;
+          }
+        } catch (_) {}
+      }
+
+      if (chosenVideo == null) {
+        throw Exception('No se encontraron más recomendaciones nuevas en este intento.');
+      }
+
+      _sessionPlayedDiscoveryIds.add(chosenVideo.id.value);
+
+      final cleanAuthor = chosenVideo.author
+          .replaceAll(RegExp(r'-\s*Topic', caseSensitive: false), '')
+          .replaceAll('VEVO', '')
+          .trim();
+      final cleanTitle = chosenVideo.title
+          .replaceAll(RegExp(r'\[.*?\]|\(.*?\)'), '')
+          .replaceAll(RegExp(r'official\s*audio|audio\s*oficial|video\s*oficial|official\s*video|lyrics|letra', caseSensitive: false), '')
+          .trim();
+      final displayTitle = cleanTitle.isNotEmpty ? cleanTitle : chosenVideo.title.trim();
+      final displayArtist = cleanAuthor.isNotEmpty ? cleanAuthor : chosenVideo.author.trim();
+
+      _currentDiscoverySeedInfo = 'Basada en $seedLabel';
+
+      // En Android: descargar temporalmente y aplicar masterización + recorte de silencio inicial y final
+      if (!kIsWeb && Platform.isAndroid) {
+        _discoveryStatusText = 'Preparando "$displayTitle" (quitando silencios)...';
+        notifyListeners();
+        await DownloaderProvider.showDiscoveryLoadingNotification(
+          '✨ Preparando: $displayTitle',
+          '$displayArtist • Quitando silencios del inicio y final...',
+        );
+
+        final tempDir = await getTemporaryDirectory();
+        final vidId = chosenVideo.id.value;
+        final rawFile = File('${tempDir.path}/disc_raw_$vidId.mp4');
+        final thumbFile = File('${tempDir.path}/disc_thumb_$vidId.jpg');
+        final readyMp3 = File('${tempDir.path}/disc_ready_$vidId.mp3');
+
+        if (await rawFile.exists()) await rawFile.delete();
+        if (await readyMp3.exists()) await readyMp3.delete();
+
+        StreamManifest manifest;
+        try {
+          manifest = await _ytCloud.videos.streamsClient
+              .getManifest(vidId, requireWatchPage: false)
+              .timeout(const Duration(seconds: 12));
+        } catch (_) {
+          manifest = await _ytCloud.videos.streamsClient
+              .getManifest(vidId)
+              .timeout(const Duration(seconds: 12));
+        }
+
+        StreamInfo? streamInfo;
+        if (manifest.muxed.isNotEmpty) {
+          streamInfo = manifest.muxed.withHighestBitrate();
+        } else {
+          final mp4s = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
+          if (mp4s.isNotEmpty) {
+            streamInfo = mp4s.withHighestBitrate();
+          } else if (manifest.audioOnly.isNotEmpty) {
+            streamInfo = manifest.audioOnly.withHighestBitrate();
+          }
+        }
+        if (streamInfo == null) throw Exception('Stream no disponible para recomendación');
+
+        // Descargar stream al archivo temporal
+        final stream = _ytCloud.videos.streamsClient.get(streamInfo);
+        final sink = rawFile.openWrite();
+        try {
+          await for (final chunk in stream.timeout(const Duration(seconds: 25))) {
+            sink.add(chunk);
+          }
+        } finally {
+          await sink.close();
+        }
+
+        // Descargar carátula para incrustarla en el MP3
+        bool hasThumb = false;
+        try {
+          final thumbUrl = chosenVideo.thumbnails.maxResUrl.isNotEmpty
+              ? chosenVideo.thumbnails.maxResUrl
+              : chosenVideo.thumbnails.highResUrl;
+          final tRes = await http.get(Uri.parse(thumbUrl)).timeout(const Duration(seconds: 4));
+          if (tRes.statusCode == 200) {
+            await thumbFile.writeAsBytes(tRes.bodyBytes);
+            hasThumb = true;
+          }
+        } catch (_) {}
+
+        final safeMetaTitle = displayTitle.replaceAll('"', '');
+        final safeMetaArtist = displayArtist.replaceAll('"', '');
+        const afFilter = DownloaderProvider.studioMasterAndTrimSilenceFilter;
+        final metadata = '-metadata title="$safeMetaTitle" -metadata artist="$safeMetaArtist"';
+        const codecFlags = '-ar 44100 -ac 2 -b:a 320k';
+
+        String cmd;
+        if (hasThumb) {
+          cmd = '-y -i "${rawFile.path}" -i "${thumbFile.path}" -map 0:a -map 1:v $afFilter $codecFlags -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${readyMp3.path}"';
+        } else {
+          cmd = '-y -i "${rawFile.path}" -vn $afFilter $codecFlags $metadata "${readyMp3.path}"';
+        }
+
+        var session = await FFmpegKit.execute(cmd);
+        var rc = await session.getReturnCode();
+        if (!ReturnCode.isSuccess(rc)) {
+          cmd = '-y -i "${rawFile.path}" -vn $codecFlags $metadata "${readyMp3.path}"';
+          session = await FFmpegKit.execute(cmd);
+          rc = await session.getReturnCode();
+        }
+
+        if (await rawFile.exists()) await rawFile.delete();
+        if (await thumbFile.exists()) await thumbFile.delete();
+
+        if (!ReturnCode.isSuccess(rc) || !await readyMp3.exists()) {
+          throw Exception('Error procesando audio recomendado');
+        }
+
+        _currentDiscoveryTempPath = readyMp3.path;
+        final stat = await readyMp3.stat();
+        final discSong = SongModel({
+          '_id': vidId.hashCode.abs() % 2147483647,
+          'title': displayTitle,
+          'artist': displayArtist,
+          'album': _currentDiscoverySeedInfo,
+          'duration': chosenVideo.duration?.inMilliseconds ?? 0,
+          '_data': readyMp3.path,
+          '_uri': readyMp3.uri.toString(),
+          '_size': stat.size,
+          'file_extension': 'mp3',
+          'is_music': true,
+          'is_discovery': true,
+          'youtube_id': vidId,
+        });
+
+        _isSingleTrackSource = true;
+        _currentDiscoverySong = discSong;
+        _currentDiscoveryVideo = chosenVideo;
+        _currentPlayingSong = discSong;
+        _currentIndex = -1;
+        _isLoadingDiscovery = false;
+        _discoveryStatusText = '';
+
+        final mediaItem = MediaItem(
+          id: discSong.id.toString(),
+          title: '✨ $displayTitle',
+          artist: '$displayArtist • $_currentDiscoverySeedInfo',
+          album: 'Modo Descubrimiento (❤️ Me gusta o ✕ en notificación)',
+        );
+
+        await _audioPlayer.setAudioSource(
+          AudioSource.uri(Uri.file(readyMp3.path), tag: mediaItem),
+        );
+        final audioSession = await AudioSession.instance;
+        await audioSession.setActive(true);
+        _isPlaying = true;
+        notifyListeners();
+        await _audioPlayer.play();
+        updateActiveDeviceInCloud();
+
+        // Mostrar notificación interactiva con botones ❤️ Me gusta (Guardar) y ✕ Quitar
+        await DownloaderProvider.showDiscoveryPlayingNotification(
+          songTitle: displayTitle,
+          artist: displayArtist,
+          seedInfo: _currentDiscoverySeedInfo,
+          isSaved: false,
+        );
+      } else {
+        // En PC / Web reproducir por stream directo y mostrar controles ❤️ / ✕ en pantalla
+        final vidId = chosenVideo.id.value;
+        final discSong = SongModel({
+          '_id': vidId.hashCode.abs() % 2147483647,
+          'title': displayTitle,
+          'artist': displayArtist,
+          'album': _currentDiscoverySeedInfo,
+          'duration': chosenVideo.duration?.inMilliseconds ?? 0,
+          '_data': '',
+          'is_cloud': true,
+          'is_discovery': true,
+          'youtube_id': vidId,
+        });
+        _currentDiscoverySong = discSong;
+        _currentDiscoveryVideo = chosenVideo;
+        _isLoadingDiscovery = false;
+        _discoveryStatusText = '';
+        notifyListeners();
+        await _playCloudSong(discSong, -1, keepDiscoveryState: true);
+      }
+    } catch (e) {
+      print('Error in playNextDiscoverySong: $e');
+      _isLoadingDiscovery = false;
+      _discoveryStatusText = 'Error buscando recomendación. Reintentando...';
+      notifyListeners();
+    }
+  }
+
+  /// Acción "❤️ Me gusta": Guarda permanentemente la canción recomendada en el dispositivo y en la lista de canciones
+  Future<bool> likeCurrentDiscoverySong() async {
+    final discSong = _currentDiscoverySong;
+    if (discSong == null) return false;
+    if (_isCurrentDiscoverySaved) return true;
+
+    try {
+      final rawTitle = discSong.title.trim();
+      final rawArtist = (discSong.artist ?? 'Artista').trim();
+      final combinedName = rawTitle.toLowerCase().contains(rawArtist.toLowerCase())
+          ? rawTitle
+          : '$rawArtist - $rawTitle';
+      final safeFileName = combinedName
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
+          .replaceAll('  ', ' ')
+          .trim();
+
+      String finalSavedPath = discSong.data;
+
+      if (!kIsWeb && Platform.isAndroid && _currentDiscoveryTempPath != null) {
+        final tempFile = File(_currentDiscoveryTempPath!);
+        if (await tempFile.exists()) {
+          Directory targetDir = Directory('/storage/emulated/0/Music/NovaMusic');
+          if (!await targetDir.exists()) {
+            await targetDir.create(recursive: true);
+          }
+          final destFile = File('${targetDir.path}/$safeFileName.mp3');
+          await tempFile.copy(destFile.path);
+          finalSavedPath = destFile.path;
+
+          try {
+            await MediaScanner.loadMedia(path: destFile.path);
+          } catch (_) {}
+        }
+      }
+
+      final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final savedSong = SongModel({
+        '_id': finalSavedPath.isNotEmpty
+            ? (finalSavedPath.hashCode.abs() % 2147483647)
+            : discSong.id,
+        'title': combinedName,
+        'artist': rawArtist,
+        'duration': discSong.duration ?? _totalDuration.inMilliseconds,
+        '_data': finalSavedPath,
+        '_uri': finalSavedPath.isNotEmpty ? File(finalSavedPath).uri.toString() : '',
+        '_display_name': '$safeFileName.mp3',
+        '_display_name_wo_ext': safeFileName,
+        'file_extension': 'mp3',
+        'date_added': nowSec,
+        'is_music': true,
+        'is_podcast': false,
+        'is_cloud': kIsWeb || finalSavedPath.isEmpty,
+        'youtube_id': discSong.getMap['youtube_id'] ?? '',
+      });
+
+      final normNew = normalizeForDedup(savedSong.title);
+      if (!_allSongs.any((s) => normalizeForDedup(s.title) == normNew)) {
+        _allSongs.insert(0, savedSong);
+      }
+      if (!_visibleSongs.any((s) => normalizeForDedup(s.title) == normNew)) {
+        _visibleSongs.insert(0, savedSong);
+        _applySort();
+      }
+
+      // Agregar al respaldo de la nube
+      if (!_cloudLibrarySongs.any((c) => normalizeForDedup(c['title'] ?? '') == normNew)) {
+        _cloudLibrarySongs.add({
+          'id': savedSong.id,
+          'title': savedSong.title,
+          'artist': savedSong.artist ?? rawArtist,
+          'duration': savedSong.duration ?? 0,
+          'url': finalSavedPath,
+          'youtube_id': discSong.getMap['youtube_id'] ?? '',
+          'is_cloud': true,
+          'added_at': DateTime.now().toIso8601String(),
+        });
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
+        if (!isGuest) {
+          await syncPreferencesToCloud();
+        }
+      }
+
+      _isCurrentDiscoverySaved = true;
+      _needsPlaylistRebuild = true;
+
+      await DownloaderProvider.showDiscoveryPlayingNotification(
+        songTitle: discSong.title,
+        artist: rawArtist,
+        seedInfo: _currentDiscoverySeedInfo,
+        isSaved: true,
+      );
+
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('Error saving liked discovery song: $e');
+      return false;
+    }
+  }
+
+  /// Acción "✕ Quitar": Descarta la canción recomendada, la bloquea permanentemente para que no vuelva a salir y pasa a la siguiente
+  Future<void> dislikeCurrentDiscoverySong() async {
+    final discSong = _currentDiscoverySong;
+    if (discSong != null) {
+      final ytId = discSong.getMap['youtube_id']?.toString() ?? _currentDiscoveryVideo?.id.value ?? '';
+      if (ytId.isNotEmpty) {
+        _dislikedDiscoveryKeys.add('id:$ytId');
+      }
+      final normTitle = normalizeForDedup(discSong.title);
+      if (normTitle.isNotEmpty) {
+        _dislikedDiscoveryKeys.add(normTitle);
+      }
+      final normFull = normalizeForDedup('${discSong.artist ?? ""} ${discSong.title}');
+      if (normFull.isNotEmpty) {
+        _dislikedDiscoveryKeys.add(normFull);
+      }
+      await _saveHiddenSongs();
+    }
+
+    await _audioPlayer.stop();
+    await _cleanupUnsavedDiscoveryTempFile();
+    await playNextDiscoverySong();
   }
 
   Future<void> seekTo(Duration position) async {

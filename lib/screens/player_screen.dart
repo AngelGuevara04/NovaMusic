@@ -196,10 +196,88 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   builder: (context, provider, child) {
                     final isFav = provider.isFavorite(song.id);
                     final isCloud = provider.isCloudSong(song);
+                    final isDiscovery = provider.isPlayingDiscoverySong;
 
                     return Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (isDiscovery)
+                          Container(
+                            margin: const EdgeInsets.only(bottom: 10),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.amberAccent.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: Colors.amberAccent.withOpacity(0.5)),
+                            ),
+                            child: Column(
+                              children: [
+                                Text(
+                                  '✨ Recomendada • ${provider.currentDiscoverySeedInfo}',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Colors.amberAccent,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    ElevatedButton.icon(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: provider.isCurrentDiscoverySaved
+                                            ? Colors.green.shade700
+                                            : Colors.pinkAccent,
+                                        foregroundColor: Colors.white,
+                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                      ),
+                                      icon: Icon(
+                                        provider.isCurrentDiscoverySaved ? Icons.check_circle : Icons.favorite,
+                                        size: 16,
+                                      ),
+                                      label: Text(
+                                        provider.isCurrentDiscoverySaved ? '¡Guardada!' : 'Me gusta (Guardar)',
+                                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                                      ),
+                                      onPressed: provider.isCurrentDiscoverySaved
+                                          ? null
+                                          : () async {
+                                              final ok = await provider.likeCurrentDiscoverySong();
+                                              if (ok && context.mounted) {
+                                                ScaffoldMessenger.of(context).showSnackBar(
+                                                  const SnackBar(
+                                                    backgroundColor: Colors.green,
+                                                    content: Text('✅ Canción guardada permanentemente en tu Lista de Canciones'),
+                                                  ),
+                                                );
+                                              }
+                                            },
+                                    ),
+                                    const SizedBox(width: 10),
+                                    OutlinedButton.icon(
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: Colors.white,
+                                        side: const BorderSide(color: Colors.redAccent),
+                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                      ),
+                                      icon: const Icon(Icons.close, color: Colors.redAccent, size: 16),
+                                      label: const Text(
+                                        '✕ Quitar',
+                                        style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                                      ),
+                                      onPressed: () async {
+                                        await provider.dislikeCurrentDiscoverySong();
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
                         if (provider.isConnectingCloudStream)
                           const Padding(
                             padding: EdgeInsets.only(bottom: 8),

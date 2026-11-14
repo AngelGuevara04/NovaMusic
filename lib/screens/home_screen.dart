@@ -730,56 +730,87 @@ class _HomeScreenState extends State<HomeScreen> {
           return Column(
             children: [
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
+                padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
                 child: Row(
                   children: [
-                    FilterChip(
-                      selected: !audioProvider.showOnlyFavorites,
-                      label: Text('Todas (${audioProvider.totalSongsCount})'),
-                      labelStyle: TextStyle(
-                        color: !audioProvider.showOnlyFavorites ? Colors.white : Colors.white70,
-                        fontWeight: !audioProvider.showOnlyFavorites ? FontWeight.bold : FontWeight.normal,
-                        fontSize: 12,
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            FilterChip(
+                              selected: !audioProvider.showOnlyFavorites && !audioProvider.isDiscoveryMode,
+                              label: Text('Todas (${audioProvider.totalSongsCount})'),
+                              labelStyle: TextStyle(
+                                color: !audioProvider.showOnlyFavorites ? Colors.white : Colors.white70,
+                                fontWeight: !audioProvider.showOnlyFavorites ? FontWeight.bold : FontWeight.normal,
+                                fontSize: 12,
+                              ),
+                              selectedColor: Colors.deepPurpleAccent,
+                              backgroundColor: const Color(0xFF242424),
+                              side: BorderSide.none,
+                              onSelected: (_) => audioProvider.setShowOnlyFavorites(false),
+                            ),
+                            const SizedBox(width: 8),
+                            FilterChip(
+                              selected: audioProvider.isDiscoveryMode,
+                              avatar: Icon(
+                                Icons.auto_awesome,
+                                color: audioProvider.isDiscoveryMode ? Colors.black : Colors.amberAccent,
+                                size: 16,
+                              ),
+                              label: Text(audioProvider.isDiscoveryMode ? 'Descubriendo ✨' : 'Descubrir ✨'),
+                              labelStyle: TextStyle(
+                                color: audioProvider.isDiscoveryMode ? Colors.black : Colors.amberAccent,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                              selectedColor: Colors.amberAccent,
+                              checkmarkColor: Colors.black,
+                              backgroundColor: const Color(0xFF2A2416),
+                              side: BorderSide(
+                                color: Colors.amberAccent.withOpacity(0.45),
+                                width: 1,
+                              ),
+                              onSelected: (_) => audioProvider.toggleDiscoveryMode(),
+                            ),
+                            const SizedBox(width: 8),
+                            FilterChip(
+                              selected: audioProvider.showOnlyFavorites,
+                              avatar: Icon(
+                                Icons.favorite,
+                                color: audioProvider.showOnlyFavorites ? Colors.white : Colors.redAccent,
+                                size: 16,
+                              ),
+                              label: Text('Favoritas (${audioProvider.totalFavoritesCount})'),
+                              labelStyle: TextStyle(
+                                color: audioProvider.showOnlyFavorites ? Colors.white : Colors.white70,
+                                fontWeight: audioProvider.showOnlyFavorites ? FontWeight.bold : FontWeight.normal,
+                                fontSize: 12,
+                              ),
+                              selectedColor: Colors.redAccent,
+                              backgroundColor: const Color(0xFF242424),
+                              side: BorderSide.none,
+                              onSelected: (_) => audioProvider.setShowOnlyFavorites(true),
+                            ),
+                            const SizedBox(width: 8),
+                            ActionChip(
+                              avatar: const Icon(Icons.queue_music, color: Colors.deepPurpleAccent, size: 16),
+                              label: Text('Listas (${audioProvider.playlists.length})'),
+                              backgroundColor: const Color(0xFF242424),
+                              side: BorderSide.none,
+                              labelStyle: const TextStyle(color: Colors.white, fontSize: 12),
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (context) => const PlaylistsScreen()),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
                       ),
-                      selectedColor: Colors.deepPurpleAccent,
-                      backgroundColor: const Color(0xFF242424),
-                      side: BorderSide.none,
-                      onSelected: (_) => audioProvider.setShowOnlyFavorites(false),
                     ),
-                    const SizedBox(width: 8),
-                    FilterChip(
-                      selected: audioProvider.showOnlyFavorites,
-                      avatar: Icon(
-                        Icons.favorite,
-                        color: audioProvider.showOnlyFavorites ? Colors.white : Colors.redAccent,
-                        size: 16,
-                      ),
-                      label: Text('Favoritas (${audioProvider.totalFavoritesCount})'),
-                      labelStyle: TextStyle(
-                        color: audioProvider.showOnlyFavorites ? Colors.white : Colors.white70,
-                        fontWeight: audioProvider.showOnlyFavorites ? FontWeight.bold : FontWeight.normal,
-                        fontSize: 12,
-                      ),
-                      selectedColor: Colors.redAccent,
-                      backgroundColor: const Color(0xFF242424),
-                      side: BorderSide.none,
-                      onSelected: (_) => audioProvider.setShowOnlyFavorites(true),
-                    ),
-                    const SizedBox(width: 8),
-                    ActionChip(
-                      avatar: const Icon(Icons.queue_music, color: Colors.deepPurpleAccent, size: 16),
-                      label: Text('Listas (${audioProvider.playlists.length})'),
-                      backgroundColor: const Color(0xFF242424),
-                      side: BorderSide.none,
-                      labelStyle: const TextStyle(color: Colors.white, fontSize: 12),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const PlaylistsScreen()),
-                        );
-                      },
-                    ),
-                    const Spacer(),
                     IconButton(
                       icon: Icon(
                         audioProvider.isShuffle ? Icons.shuffle_on_outlined : Icons.shuffle,
@@ -802,6 +833,145 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
+              if (audioProvider.isDiscoveryMode)
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.amber.withOpacity(0.18),
+                        Colors.deepPurpleAccent.withOpacity(0.22),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.amberAccent.withOpacity(0.45)),
+                  ),
+                  child: audioProvider.isLoadingDiscovery
+                      ? Row(
+                          children: [
+                            const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.amberAccent),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                audioProvider.discoveryStatusText.isNotEmpty
+                                    ? audioProvider.discoveryStatusText
+                                    : 'Buscando música nueva recomendada para ti...',
+                                style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () => audioProvider.stopDiscoveryMode(),
+                              child: const Text('Cancelar', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                            ),
+                          ],
+                        )
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.auto_awesome, color: Colors.amberAccent, size: 16),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    'MODO DESCUBRIMIENTO • ${audioProvider.currentDiscoverySeedInfo}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.amberAccent,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                InkWell(
+                                  onTap: () => audioProvider.stopDiscoveryMode(),
+                                  child: const Padding(
+                                    padding: EdgeInsets.symmetric(horizontal: 4),
+                                    child: Text(
+                                      'Salir',
+                                      style: TextStyle(color: Colors.white60, fontSize: 11.5),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (audioProvider.currentDiscoverySong != null) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                '${audioProvider.currentDiscoverySong!.title} — ${audioProvider.currentDiscoverySong!.artist ?? ""}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: audioProvider.isCurrentDiscoverySaved
+                                            ? Colors.green.shade700
+                                            : Colors.pinkAccent,
+                                        foregroundColor: Colors.white,
+                                        padding: const EdgeInsets.symmetric(vertical: 8),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      ),
+                                      icon: Icon(
+                                        audioProvider.isCurrentDiscoverySaved ? Icons.check_circle : Icons.favorite,
+                                        size: 16,
+                                      ),
+                                      label: Text(
+                                        audioProvider.isCurrentDiscoverySaved
+                                            ? '¡Guardada en tu lista!'
+                                            : 'Me gusta (Guardar)',
+                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                      ),
+                                      onPressed: audioProvider.isCurrentDiscoverySaved
+                                          ? null
+                                          : () async {
+                                              final ok = await audioProvider.likeCurrentDiscoverySong();
+                                              if (ok && context.mounted) {
+                                                ScaffoldMessenger.of(context).showSnackBar(
+                                                  const SnackBar(
+                                                    backgroundColor: Colors.green,
+                                                    content: Text('✅ Canción guardada permanentemente en tu Lista de Canciones'),
+                                                  ),
+                                                );
+                                              }
+                                            },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: Colors.white,
+                                        side: const BorderSide(color: Colors.white38),
+                                        padding: const EdgeInsets.symmetric(vertical: 8),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      ),
+                                      icon: const Icon(Icons.close, color: Colors.redAccent, size: 16),
+                                      label: const Text(
+                                        '✕ Quitar (No mostrar)',
+                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                      ),
+                                      onPressed: () async {
+                                        await audioProvider.dislikeCurrentDiscoverySong();
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
+                ),
               Expanded(
                 child: RefreshIndicator(
                   color: Theme.of(context).primaryColor,
