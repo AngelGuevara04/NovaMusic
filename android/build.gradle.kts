@@ -22,6 +22,14 @@ subprojects {
     afterEvaluate {
         project.extensions.findByName("android")?.let { androidExt ->
             try {
+                val getNs = androidExt.javaClass.getMethod("getNamespace")
+                val currentNs = getNs.invoke(androidExt) as? String
+                if (currentNs.isNullOrEmpty()) {
+                    val fallbackNs = if (project.group.toString().isNotEmpty()) project.group.toString() else "com.example.${project.name.replace("-", "_")}"
+                    androidExt.javaClass.getMethod("setNamespace", String::class.java).invoke(androidExt, fallbackNs)
+                }
+            } catch (e: Exception) {}
+            try {
                 androidExt.javaClass.getMethod("setCompileSdk", Int::class.java).invoke(androidExt, 36)
             } catch (e: Exception) {
                 try {
