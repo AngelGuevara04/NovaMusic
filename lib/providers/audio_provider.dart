@@ -32,6 +32,7 @@ class AudioProvider with ChangeNotifier {
   Set<String> _hiddenSongKeys = {};
   Set<String> _deletedSongKeys = {};
   Set<String> _dislikedDiscoveryKeys = {};
+  Set<String> _pcDownloadedSongKeys = {};
   List<int> _favoriteSongIds = [];
   String? _currentUsername;
   bool _showOnlyFavorites = false;
@@ -139,7 +140,17 @@ class AudioProvider with ChangeNotifier {
   int get cloudOnlySongsCount => _visibleSongs.where((s) => isCloudSong(s)).length;
 
   bool isCloudSong(SongModel song) {
-    if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) return true;
+    if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
+      final norm = normalizeForDedup(song.title);
+      if (norm.isNotEmpty) {
+        if (_pcDownloadedSongKeys.contains(norm)) return false;
+        if (_pcDownloadedSongKeys.any((k) =>
+            k.length >= 6 && norm.length >= 6 && (k.contains(norm) || norm.contains(k)))) {
+          return false;
+        }
+      }
+      return true;
+    }
     if (song.getMap['is_cloud'] == true) return true;
     if (song.data.isEmpty) return true;
     try {
@@ -148,6 +159,44 @@ class AudioProvider with ChangeNotifier {
     } catch (_) {
       return true;
     }
+  }
+
+  bool isCloudItemDownloadedOnDevice(Map<String, dynamic> cloudItem) {
+    final cTitle = normalizeForDedup((cloudItem['title'] ?? '').toString());
+    if (cTitle.isEmpty) return false;
+
+    if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
+      if (_pcDownloadedSongKeys.contains(cTitle)) return true;
+      return _pcDownloadedSongKeys.any((k) =>
+          k.length >= 6 && cTitle.length >= 6 && (k.contains(cTitle) || cTitle.contains(k)));
+    }
+
+    return _allSongs.any((s) {
+      if (isCloudSong(s)) return false;
+      final lTitle = normalizeForDedup(s.title);
+      if (lTitle == cTitle) return true;
+      if (cTitle.length >= 6 && lTitle.length >= 6) {
+        if (lTitle.contains(cTitle) || cTitle.contains(lTitle)) return true;
+      }
+      return false;
+    });
+  }
+
+  List<Map<String, dynamic>> get uniqueCloudLibrarySongs {
+    final List<Map<String, dynamic>> unique = [];
+    final Set<String> seen = {};
+    for (var item in _cloudLibrarySongs) {
+      final norm = normalizeForDedup((item['title'] ?? '').toString());
+      if (norm.isNotEmpty && !seen.contains(norm) && !_hiddenSongKeys.contains(norm) && !_deletedSongKeys.contains(norm)) {
+        seen.add(norm);
+        unique.add(item);
+      }
+    }
+    return unique;
+  }
+
+  List<Map<String, dynamic>> get missingCloudSongs {
+    return uniqueCloudLibrarySongs.where((c) => !isCloudItemDownloadedOnDevice(c)).toList();
   }
 
   bool _isSongHiddenOrDeleted(SongModel s) {
@@ -1386,15 +1435,33 @@ class AudioProvider with ChangeNotifier {
 
   Future<void> fetchSongs() async {
     if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
-      _allSongs = _cloudLibrarySongs.map((c) => SongModel({
-        '_id': c['id'] is int ? c['id'] : int.tryParse(c['id'].toString()) ?? DateTime.now().millisecondsSinceEpoch,
-        'title': c['title'] ?? 'Sin título',
-        'artist': c['artist'] ?? 'Artista desconocido',
-        'duration': c['duration'] is int ? c['duration'] : int.tryParse(c['duration'].toString()) ?? 0,
-        '_data': c['url'] ?? '',
-        'is_cloud': true,
-        'youtube_id': c['youtube_id'] ?? '',
-      })).toList();
+      try {
+        final res = await http.get(Uri.parse('/api/local-songs')).timeout(const Duration(seconds: 2));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body);
+          if (data is Map && data['keys'] is List) {
+            _pcDownloadedSongKeys = (data['keys'] as List).map((e) => e.toString()).toSet();
+          }
+        }
+      } catch (_) {}
+
+      _allSongs = _cloudLibrarySongs.map((c) {
+        final titleStr = (c['title'] ?? 'Sin título').toString();
+        final norm = normalizeForDedup(titleStr);
+        final isDownloadedOnPc = norm.isNotEmpty &&
+            (_pcDownloadedSongKeys.contains(norm) ||
+                _pcDownloadedSongKeys.any((k) =>
+                    k.length >= 6 && norm.length >= 6 && (k.contains(norm) || norm.contains(k))));
+        return SongModel({
+          '_id': c['id'] is int ? c['id'] : int.tryParse(c['id'].toString()) ?? DateTime.now().millisecondsSinceEpoch,
+          'title': titleStr,
+          'artist': c['artist'] ?? 'Artista desconocido',
+          'duration': c['duration'] is int ? c['duration'] : int.tryParse(c['duration'].toString()) ?? 0,
+          '_data': c['url'] ?? '',
+          'is_cloud': !isDownloadedOnPc,
+          'youtube_id': c['youtube_id'] ?? '',
+        });
+      }).toList();
       _visibleSongs = _allSongs.where((song) => !_isSongHiddenOrDeleted(song)).toList();
       _applySort();
       _needsPlaylistRebuild = true;
@@ -1814,7 +1881,7 @@ class AudioProvider with ChangeNotifier {
     _currentPlayingSong = targetSong;
     _currentIndex = index;
 
-    if (isCloudSong(targetSong)) {
+    if (kIsWeb || isCloudSong(targetSong)) {
       await _playCloudSong(targetSong, index, initialPosition: initialPosition);
       return;
     }

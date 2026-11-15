@@ -96,22 +96,11 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
   @override
   Widget build(BuildContext context) {
     final audioProvider = Provider.of<AudioProvider>(context);
-    final cloudList = audioProvider.cloudLibrarySongs;
-    final localSongs = audioProvider.songs;
-
-    // Deduplicate cloud list for display
-    final List<Map<String, dynamic>> uniqueCloud = [];
-    final Set<String> seen = {};
-    for (var item in cloudList) {
-      final norm = _normalize(item['title'] ?? '');
-      if (norm.isNotEmpty && !seen.contains(norm)) {
-        seen.add(norm);
-        uniqueCloud.add(item);
-      }
-    }
+    final downloader = Provider.of<DownloaderProvider>(context);
+    final uniqueCloud = audioProvider.uniqueCloudLibrarySongs;
 
     final int totalBackup = uniqueCloud.length;
-    final int downloadedCount = uniqueCloud.where((c) => _isSongOnDevice(c, localSongs)).length;
+    final int downloadedCount = uniqueCloud.where((c) => audioProvider.isCloudItemDownloadedOnDevice(c)).length;
     final int missingCount = totalBackup - downloadedCount;
 
     return Scaffold(
@@ -200,7 +189,7 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                               '$downloadedCount',
                               style: const TextStyle(color: Colors.greenAccent, fontSize: 18, fontWeight: FontWeight.bold),
                             ),
-                            const Text('En este celular', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                            const Text('En este dispositivo', style: TextStyle(color: Colors.white70, fontSize: 11)),
                           ],
                         ),
                       ),
@@ -230,7 +219,62 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                     ),
                   ],
                 ),
-                if (missingCount > 0) ...[
+                if (downloader.isBatchDownloadingCloud) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.deepPurpleAccent.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.deepPurpleAccent.withOpacity(0.5)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.cyanAccent),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Descargando (${downloader.batchCompletedCount}/${downloader.batchTotalCount}): ${downloader.batchCurrentSongTitle}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () => downloader.cancelBatchCloudDownload(),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.redAccent,
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              child: const Text('Detener', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: LinearProgressIndicator(
+                            value: downloader.batchTotalCount > 0
+                                ? downloader.batchCompletedCount / downloader.batchTotalCount
+                                : null,
+                            backgroundColor: Colors.white12,
+                            color: Colors.cyanAccent,
+                            minHeight: 6,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ] else if (missingCount > 0) ...[
                   const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,
@@ -241,12 +285,21 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         padding: const EdgeInsets.symmetric(vertical: 10),
                       ),
-                      icon: const Icon(Icons.download, size: 18),
-                      label: Text('Buscar y recuperar canciones ($missingCount pendientes)'),
+                      icon: const Icon(Icons.cloud_download, size: 18),
+                      label: Text('Descargar todas las canciones ($missingCount pendientes)'),
                       onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const DownloaderScreen()),
+                        final missingList = uniqueCloud
+                            .where((c) => !audioProvider.isCloudItemDownloadedOnDevice(c))
+                            .toList();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Iniciando descarga de ${missingList.length} canciones de la nube...'),
+                            backgroundColor: const Color(0xFF7C4DFF),
+                          ),
+                        );
+                        downloader.downloadAllCloudSongs(
+                          missingList,
+                          onProgressUpdate: () => audioProvider.fetchSongs(),
                         );
                       },
                     ),
@@ -331,8 +384,10 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                       final item = uniqueCloud[index];
                       final title = item['title'] ?? 'Sin título';
                       final artist = item['artist'] ?? 'Artista desconocido';
-                      final isOnDevice = _isSongOnDevice(item, localSongs);
-                      final url = item['url']?.toString() ?? '';
+                      final isOnDevice = audioProvider.isCloudItemDownloadedOnDevice(item);
+                      final isDownloadingThis = downloader.isCloudSongDownloading(
+                        AudioProvider.normalizeForDedup(title),
+                      );
 
                       return ListTile(
                         leading: Container(
@@ -372,22 +427,49 @@ class _CloudBackupScreenState extends State<CloudBackupScreen> {
                                   style: TextStyle(color: Colors.greenAccent, fontSize: 11, fontWeight: FontWeight.bold),
                                 ),
                               )
-                            : ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.deepPurpleAccent.withOpacity(0.3),
-                                  foregroundColor: Colors.white,
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                ),
-                                icon: const Icon(Icons.download, size: 14),
-                                label: const Text('Descargar', style: TextStyle(fontSize: 11)),
-                                onPressed: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(builder: (context) => const DownloaderScreen()),
-                                  );
-                                },
-                              ),
+                            : isDownloadingThis
+                                ? Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.deepPurpleAccent.withOpacity(0.2),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(
+                                          width: 12,
+                                          height: 12,
+                                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.cyanAccent),
+                                        ),
+                                        SizedBox(width: 6),
+                                        Text('Descargando...', style: TextStyle(color: Colors.cyanAccent, fontSize: 11)),
+                                      ],
+                                    ),
+                                  )
+                                : ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.deepPurpleAccent.withOpacity(0.3),
+                                      foregroundColor: Colors.white,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    ),
+                                    icon: const Icon(Icons.download, size: 14),
+                                    label: const Text('Descargar', style: TextStyle(fontSize: 11)),
+                                    onPressed: () {
+                                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Descargando "$title" a este dispositivo...'),
+                                          duration: const Duration(seconds: 2),
+                                        ),
+                                      );
+                                      downloader.downloadCloudSong(
+                                        item,
+                                        onSuccess: () => audioProvider.fetchSongs(),
+                                      );
+                                    },
+                                  ),
                       );
                     },
                   ),

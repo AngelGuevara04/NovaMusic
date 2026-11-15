@@ -229,7 +229,10 @@ class _SuggestionModalContentState extends State<_SuggestionModalContent> {
                             final typeKey = item['type'] ?? 'general';
                             final typeInfo = _types[typeKey] ?? _types['general']!;
                             final user = item['username'] ?? 'Anónimo';
-                            final msg = item['message'] ?? '';
+                            final rawMsg = (item['message'] ?? '').toString();
+                            final msg = rawMsg.replaceFirst(RegExp(r'^\[NovaMusic\]\s*'), '');
+                            final status = (item['status'] ?? 'pending').toString();
+                            final isCompleted = status == 'completed' || status == 'resolved';
                             final date = item['created_at'] != null
                                 ? item['created_at'].toString().split('T').first
                                 : '';
@@ -244,6 +247,23 @@ class _SuggestionModalContentState extends State<_SuggestionModalContent> {
                               subtitle: Text(
                                 '$user • $date',
                                 style: const TextStyle(color: Colors.white38, fontSize: 11),
+                              ),
+                              trailing: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: isCompleted
+                                      ? Colors.greenAccent.withOpacity(0.15)
+                                      : Colors.amberAccent.withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  isCompleted ? 'Aplicada' : 'Pendiente',
+                                  style: TextStyle(
+                                    color: isCompleted ? Colors.greenAccent : Colors.amberAccent,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ),
                             );
                           },

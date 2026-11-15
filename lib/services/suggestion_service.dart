@@ -18,11 +18,14 @@ class SuggestionService {
           : (Platform.isAndroid ? 'Android' : (Platform.isWindows ? 'Windows' : 'Otro'));
       final version = UpdaterService.currentVersion;
 
+      final cleanMsg = message.trim();
+      final taggedMsg = cleanMsg.startsWith('[NovaMusic]') ? cleanMsg : '[NovaMusic] $cleanMsg';
+
       final supabase = Supabase.instance.client;
       await supabase.from('app_suggestions').insert({
         'username': username,
         'type': type,
-        'message': message.trim(),
+        'message': taggedMsg,
         'app_version': version,
         'device_info': platform,
         'status': 'pending',

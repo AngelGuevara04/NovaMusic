@@ -248,29 +248,53 @@ class SongTile extends StatelessWidget {
                           : const Icon(Icons.bar_chart, color: Color(0xFFB388FF), size: 22),
                     ),
                   if (isCloud)
-                    IconButton(
-                      splashRadius: 20,
-                      padding: const EdgeInsets.only(right: 6),
-                      constraints: const BoxConstraints(),
-                      icon: const Icon(Icons.download_for_offline_outlined, color: Colors.deepPurpleAccent, size: 22),
-                      tooltip: 'Descargar a este dispositivo',
-                      onPressed: () {
-                        final downloader = Provider.of<DownloaderProvider>(context, listen: false);
-                        String query = song.getMap['youtube_id']?.toString() ?? '';
-                        if (query.isEmpty) {
-                          query = '${song.title} ${song.artist ?? ""}';
-                        } else if (!query.startsWith('http')) {
-                          query = 'https://www.youtube.com/watch?v=$query';
+                    Consumer<DownloaderProvider>(
+                      builder: (context, downloader, _) {
+                        final isDownloading = downloader.isCloudSongDownloading(
+                          AudioProvider.normalizeForDedup(song.title),
+                        );
+                        if (isDownloading) {
+                          return const Padding(
+                            padding: EdgeInsets.only(right: 8),
+                            child: SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.deepPurpleAccent,
+                              ),
+                            ),
+                          );
                         }
-                        downloader.startDownload(query, onSuccess: () {
-                          audioProvider.fetchSongs();
-                        });
-                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Descargando "${song.title}" a este celular...'),
-                            duration: const Duration(seconds: 2),
+                        return IconButton(
+                          splashRadius: 20,
+                          padding: const EdgeInsets.only(right: 6),
+                          constraints: const BoxConstraints(),
+                          icon: const Icon(
+                            Icons.download_for_offline_outlined,
+                            color: Colors.deepPurpleAccent,
+                            size: 22,
                           ),
+                          tooltip: 'Descargar a este dispositivo',
+                          onPressed: () {
+                            downloader.downloadCloudSong(
+                              {
+                                'title': song.title,
+                                'artist': song.artist ?? '',
+                                'youtube_id': song.getMap['youtube_id']?.toString() ?? '',
+                              },
+                              onSuccess: () {
+                                audioProvider.fetchSongs();
+                              },
+                            );
+                            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Descargando "${song.title}" a este dispositivo...'),
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          },
                         );
                       },
                     ),

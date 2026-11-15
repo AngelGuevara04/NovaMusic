@@ -6,6 +6,7 @@ import '../widgets/device_output_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/audio_provider.dart';
+import '../providers/downloader_provider.dart';
 import '../widgets/song_tile.dart';
 import 'player_screen.dart';
 import 'hidden_songs_screen.dart';
@@ -695,34 +696,113 @@ class _HomeScreenState extends State<HomeScreen> {
           }
 
           if (audioProvider.songs.isEmpty) {
+            final missingCloud = audioProvider.missingCloudSongs;
             return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.music_off, size: 80, color: Colors.white30),
-                  const SizedBox(height: 16),
-                  const Text(
-                    '¿No encuentras lo que buscas?',
-                    style: TextStyle(color: Color(0xFFE0E0E0), fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).primaryColor,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (!audioProvider.isGuest && missingCloud.isNotEmpty) ...[
+                      Consumer<DownloaderProvider>(
+                        builder: (context, downloader, _) {
+                          return Container(
+                            padding: const EdgeInsets.all(18),
+                            margin: const EdgeInsets.only(bottom: 24),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  Colors.deepPurpleAccent.withOpacity(0.35),
+                                  const Color(0xFF1E1E1E),
+                                ],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.deepPurpleAccent.withOpacity(0.5)),
+                            ),
+                            child: Column(
+                              children: [
+                                const Icon(Icons.cloud_download_rounded, size: 48, color: Colors.cyanAccent),
+                                const SizedBox(height: 10),
+                                Text(
+                                  '¡Tienes ${missingCloud.length} canciones en tu Nube!',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 6),
+                                const Text(
+                                  'Detectamos que iniciaste sesión en un dispositivo nuevo. Puedes descargar toda tu música respaldada con un solo toque.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                                ),
+                                const SizedBox(height: 14),
+                                if (downloader.isBatchDownloadingCloud) ...[
+                                  Text(
+                                    'Descargando (${downloader.batchCompletedCount}/${downloader.batchTotalCount}): ${downloader.batchCurrentSongTitle}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(color: Colors.cyanAccent, fontSize: 12, fontWeight: FontWeight.w600),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  LinearProgressIndicator(
+                                    value: downloader.batchTotalCount > 0
+                                        ? downloader.batchCompletedCount / downloader.batchTotalCount
+                                        : null,
+                                    backgroundColor: Colors.white12,
+                                    color: Colors.cyanAccent,
+                                  ),
+                                ] else
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: ElevatedButton.icon(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.deepPurpleAccent,
+                                        foregroundColor: Colors.white,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                      ),
+                                      icon: const Icon(Icons.download_for_offline),
+                                      label: Text('Descargar mis ${missingCloud.length} canciones de la nube'),
+                                      onPressed: () {
+                                        downloader.downloadAllCloudSongs(
+                                          missingCloud,
+                                          onProgressUpdate: () => audioProvider.fetchSongs(),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                    const Icon(Icons.music_off, size: 80, color: Colors.white30),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '¿No encuentras lo que buscas?',
+                      style: TextStyle(color: Color(0xFFE0E0E0), fontSize: 18, fontWeight: FontWeight.w600),
                     ),
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const DownloaderScreen()),
-                      );
-                    },
-                    icon: const Icon(Icons.download),
-                    label: const Text('Descargar canciones gratis'),
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Theme.of(context).primaryColor,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      ),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const DownloaderScreen()),
+                        );
+                      },
+                      icon: const Icon(Icons.download),
+                      label: const Text('Descargar canciones gratis'),
+                    ),
+                  ],
+                ),
               ),
             );
           }
@@ -833,6 +913,86 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
+              if (!audioProvider.isGuest && audioProvider.missingCloudSongs.isNotEmpty)
+                Consumer<DownloaderProvider>(
+                  builder: (context, downloader, _) {
+                    final missing = audioProvider.missingCloudSongs;
+                    return Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1F1934),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.deepPurpleAccent.withOpacity(0.45)),
+                      ),
+                      child: downloader.isBatchDownloadingCloud
+                          ? Row(
+                              children: [
+                                const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.cyanAccent),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    'Descargando nube (${downloader.batchCompletedCount}/${downloader.batchTotalCount}): ${downloader.batchCurrentSongTitle}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () => downloader.cancelBatchCloudDownload(),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: Colors.redAccent,
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  child: const Text('Detener', style: TextStyle(fontSize: 11)),
+                                ),
+                              ],
+                            )
+                          : Row(
+                              children: [
+                                const Icon(Icons.cloud_download_outlined, color: Colors.cyanAccent, size: 20),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    '${missing.length} canciones en la nube sin descargar en este dispositivo',
+                                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.deepPurpleAccent,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  ),
+                                  onPressed: () {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Descargando ${missing.length} canciones de tu nube...'),
+                                        backgroundColor: const Color(0xFF7C4DFF),
+                                      ),
+                                    );
+                                    downloader.downloadAllCloudSongs(
+                                      missing,
+                                      onProgressUpdate: () => audioProvider.fetchSongs(),
+                                    );
+                                  },
+                                  child: const Text('Descargar todas', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                ),
+                              ],
+                            ),
+                    );
+                  },
+                ),
               if (audioProvider.isDiscoveryMode)
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),

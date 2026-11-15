@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
@@ -18,17 +19,67 @@ class DownloadTask {
   int notifId = DateTime.now().millisecondsSinceEpoch.remainder(100000);
   String url;
   String title = "Obteniendo información...";
+  String? preferredTitle;
+  String? preferredArtist;
+  String? preferredYoutubeId;
+  String? normKey;
   double progress = 0.0;
   String status = "Iniciando...";
   bool isDownloading = true;
   bool hasError = false;
 
-  DownloadTask({required this.url});
+  DownloadTask({
+    required this.url,
+    this.preferredTitle,
+    this.preferredArtist,
+    this.preferredYoutubeId,
+    this.normKey,
+  }) {
+    if (preferredTitle != null && preferredTitle!.trim().isNotEmpty) {
+      title = preferredTitle!.trim();
+    }
+  }
 }
 
 class DownloaderProvider extends ChangeNotifier {
   final YoutubeExplode _yt = YoutubeExplode();
   final List<DownloadTask> _activeDownloads = [];
+  final Set<String> _downloadingCloudNormKeys = {};
+
+  bool _isBatchDownloadingCloud = false;
+  bool _cancelBatchRequested = false;
+  int _batchCompletedCount = 0;
+  int _batchTotalCount = 0;
+  String _batchCurrentSongTitle = '';
+
+  bool get isBatchDownloadingCloud => _isBatchDownloadingCloud;
+  int get batchCompletedCount => _batchCompletedCount;
+  int get batchTotalCount => _batchTotalCount;
+  String get batchCurrentSongTitle => _batchCurrentSongTitle;
+
+  bool isCloudSongDownloading(String normKey) =>
+      normKey.isNotEmpty && _downloadingCloudNormKeys.contains(normKey);
+
+  void cancelBatchCloudDownload() {
+    _cancelBatchRequested = true;
+    notifyListeners();
+  }
+
+  static String normalizeKey(String raw) {
+    return raw
+        .toLowerCase()
+        .replaceAll(RegExp(r'\[.*?\]|\(.*?\)', caseSensitive: false), '')
+        .replaceAll(RegExp(r'feat\..*|ft\..*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'official|video|audio|lyrics|en vivo|letra|remastered', caseSensitive: false), '')
+        .replaceAll('á', 'a')
+        .replaceAll('é', 'e')
+        .replaceAll('í', 'i')
+        .replaceAll('ó', 'o')
+        .replaceAll('ú', 'u')
+        .replaceAll('ñ', 'n')
+        .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
+        .trim();
+  }
   
   List<Video> _searchResults = [];
   bool _isSearching = false;
@@ -386,25 +437,31 @@ class DownloaderProvider extends ChangeNotifier {
     await searchYoutube("$artist canciones");
   }
 
-  Future<void> startDownload(String url, {required Function() onSuccess}) async {
+  Future<void> startDownload(
+    String url, {
+    required Function() onSuccess,
+    String? preferredTitle,
+    String? preferredArtist,
+    String? preferredYoutubeId,
+  }) async {
     if (url.isEmpty) return;
 
     // Detectar si es una playlist de YouTube
-    if (url.contains('list=') || url.contains('/playlist')) {
+    if (!kIsWeb && (url.contains('list=') || url.contains('/playlist'))) {
       try {
         final playlistIdMatch = RegExp(r'[?&]list=([^#&?]+)').firstMatch(url);
         final playlistId = playlistIdMatch?.group(1) ?? url;
-        
+
         var playlistVideos = _yt.playlists.getVideos(playlistId);
         int queuedCount = 0;
 
         await for (var video in playlistVideos) {
-          final newTask = DownloadTask(url: video.url);
+          final newTask = DownloadTask(url: video.url, preferredTitle: video.title);
           newTask.title = video.title;
           _activeDownloads.insert(0, newTask);
           notifyListeners();
           queuedCount++;
-          
+
           _processDownloadTask(newTask, onSuccess);
           if (queuedCount >= 25) break;
         }
@@ -413,34 +470,221 @@ class DownloaderProvider extends ChangeNotifier {
         print("Error analizando playlist: $e");
       }
     }
-    
-    final newTask = DownloadTask(url: url);
+
+    final normKey = normalizeKey(preferredTitle ?? url);
+    final newTask = DownloadTask(
+      url: url,
+      preferredTitle: preferredTitle,
+      preferredArtist: preferredArtist,
+      preferredYoutubeId: preferredYoutubeId,
+      normKey: normKey,
+    );
     _activeDownloads.insert(0, newTask);
     notifyListeners();
 
-    _showProgressNotification(newTask, 0, "Iniciando conexión...");
-    _processDownloadTask(newTask, onSuccess);
+    if (!kIsWeb && Platform.isAndroid) {
+      _showProgressNotification(newTask, 0, "Iniciando conexión...");
+    }
+    await _processDownloadTask(newTask, onSuccess);
+  }
+
+  /// Descarga una canción respaldada en la nube (Supabase guarda el nombre/artista y opcionalmente youtube_id)
+  /// Funciona tanto en Celular (Android) como en Computadora (Windows / Web).
+  Future<bool> downloadCloudSong(
+    Map<String, dynamic> cloudItem, {
+    required FutureOr<void> Function() onSuccess,
+  }) async {
+    final rawTitle = (cloudItem['title'] ?? '').toString().trim();
+    final rawArtist = (cloudItem['artist'] ?? '').toString().trim();
+    final rawYtId = (cloudItem['youtube_id'] ?? '').toString().trim();
+    if (rawTitle.isEmpty) return false;
+
+    final normKey = normalizeKey(rawTitle);
+    if (normKey.isNotEmpty && _downloadingCloudNormKeys.contains(normKey)) {
+      return false;
+    }
+
+    if (normKey.isNotEmpty) {
+      _downloadingCloudNormKeys.add(normKey);
+      notifyListeners();
+    }
+
+    try {
+      final bool hasValidYtId = RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(rawYtId);
+      final lowerArtist = rawArtist.toLowerCase();
+      final isGenericArtist = lowerArtist.isEmpty ||
+          lowerArtist.contains('desconocido') ||
+          lowerArtist.contains('novamusic') ||
+          lowerArtist.contains('descargado') ||
+          lowerArtist.contains('en la nube') ||
+          lowerArtist == '<unknown>' ||
+          lowerArtist == 'unknown';
+
+      String queryOrUrl;
+      if (hasValidYtId) {
+        queryOrUrl = 'https://www.youtube.com/watch?v=$rawYtId';
+      } else if (!isGenericArtist && !rawTitle.toLowerCase().contains(lowerArtist)) {
+        queryOrUrl = '$rawArtist - $rawTitle';
+      } else {
+        queryOrUrl = rawTitle;
+      }
+
+      final task = DownloadTask(
+        url: queryOrUrl,
+        preferredTitle: rawTitle,
+        preferredArtist: isGenericArtist ? null : rawArtist,
+        preferredYoutubeId: hasValidYtId ? rawYtId : null,
+        normKey: normKey,
+      );
+      _activeDownloads.insert(0, task);
+      notifyListeners();
+
+      if (!kIsWeb && Platform.isAndroid) {
+        _showProgressNotification(task, 0, 'Recuperando de tu nube...');
+      }
+
+      await _processDownloadTask(task, () async {
+        await onSuccess();
+      });
+
+      return !task.hasError;
+    } finally {
+      if (normKey.isNotEmpty) {
+        _downloadingCloudNormKeys.remove(normKey);
+      }
+      notifyListeners();
+    }
+  }
+
+  /// Descarga en lote todas las canciones de la nube que falten en este dispositivo (móvil o PC)
+  Future<void> downloadAllCloudSongs(
+    List<Map<String, dynamic>> missingSongs, {
+    required FutureOr<void> Function() onProgressUpdate,
+  }) async {
+    if (_isBatchDownloadingCloud || missingSongs.isEmpty) return;
+
+    _isBatchDownloadingCloud = true;
+    _cancelBatchRequested = false;
+    _batchCompletedCount = 0;
+    _batchTotalCount = missingSongs.length;
+    _batchCurrentSongTitle = 'Preparando descargas...';
+    notifyListeners();
+
+    try {
+      for (final item in missingSongs) {
+        if (_cancelBatchRequested) break;
+        final title = (item['title'] ?? 'Canción').toString().trim();
+        _batchCurrentSongTitle = title;
+        notifyListeners();
+
+        await downloadCloudSong(
+          item,
+          onSuccess: onProgressUpdate,
+        );
+
+        _batchCompletedCount++;
+        notifyListeners();
+      }
+    } finally {
+      _isBatchDownloadingCloud = false;
+      _cancelBatchRequested = false;
+      _batchCurrentSongTitle = '';
+      await onProgressUpdate();
+      notifyListeners();
+    }
   }
 
   Future<void> _processDownloadTask(DownloadTask task, Function() onSuccess) async {
+    if (kIsWeb) {
+      await _downloadOnWebOrPc(task, onSuccess);
+      return;
+    }
+
     try {
       await _downloadNormalMethod(task, onSuccess);
     } catch (e) {
-      task.status = 'YouTube bloqueó. Usando servidor de respaldo...';
+      task.status = 'Reintentando búsqueda alternativa en la nube...';
       task.progress = -1.0;
       notifyListeners();
-      _showProgressNotification(task, -1, 'Usando servidor de respaldo...');
+      if (!kIsWeb && Platform.isAndroid) {
+        _showProgressNotification(task, -1, 'Reintentando con búsqueda alternativa...');
+      }
 
       try {
-        await _downloadFallbackMethod(task, onSuccess);
+        await _downloadFallbackSearchMethod(task, onSuccess);
       } catch (fallbackError) {
         task.status = 'Error: No se pudo descargar.';
         task.hasError = true;
         task.isDownloading = false;
         notifyListeners();
-        _showErrorNotification(task);
+        if (!kIsWeb && Platform.isAndroid) {
+          _showErrorNotification(task);
+        }
       }
     }
+  }
+
+  Future<void> _downloadOnWebOrPc(DownloadTask task, Function() onSuccess) async {
+    try {
+      task.status = 'Descargando canción a esta computadora...';
+      task.progress = -1.0;
+      notifyListeners();
+
+      String ytId = task.preferredYoutubeId ?? '';
+      if (ytId.isEmpty) {
+        final m = RegExp(r'(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})').firstMatch(task.url);
+        if (m != null) {
+          ytId = m.group(1) ?? '';
+        } else if (RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(task.url.trim())) {
+          ytId = task.url.trim();
+        }
+      }
+
+      final title = (task.preferredTitle != null && task.preferredTitle!.trim().isNotEmpty)
+          ? task.preferredTitle!.trim()
+          : task.title.trim();
+      final artist = (task.preferredArtist ?? '').trim();
+      final query = (task.url.startsWith('http') && title.isNotEmpty && title != 'Obteniendo información...')
+          ? '$artist $title'.trim()
+          : (title.isNotEmpty && title != 'Obteniendo información...' ? '$artist $title'.trim() : task.url.trim());
+
+      final uri = Uri.parse(
+        '/api/save-local?id=${Uri.encodeComponent(ytId)}&q=${Uri.encodeComponent(query)}&title=${Uri.encodeComponent(title)}&artist=${Uri.encodeComponent(artist)}',
+      );
+
+      final response = await http.get(uri).timeout(const Duration(seconds: 40));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map && data['ok'] == true) {
+          task.title = (data['filename'] ?? title).toString().replaceAll('.mp3', '');
+          task.status = '¡Descargada en Music/NovaMusic!';
+          task.progress = 1.0;
+          task.isDownloading = false;
+          task.hasError = false;
+          notifyListeners();
+          await onSuccess();
+          return;
+        }
+      }
+      throw Exception('Error en descarga local de PC (${response.statusCode})');
+    } catch (e) {
+      task.status = 'Error al descargar en este dispositivo.';
+      task.hasError = true;
+      task.isDownloading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<Video> _searchBestVideoByName(String rawQuery) async {
+    final cleanQuery = rawQuery.trim();
+    final results = (await _yt.search.search(cleanQuery).timeout(const Duration(seconds: 12))).toList();
+    if (results.isEmpty) {
+      throw Exception('No se encontraron resultados para "$cleanQuery"');
+    }
+    final nonLive = results.where((v) => !isLiveOrLowQuality(v)).toList();
+    final pool = nonLive.isNotEmpty ? nonLive : results;
+    pool.sort((a, b) => getAudioQualityScore(b).compareTo(getAudioQualityScore(a)));
+    return pool.first;
   }
 
   Future<String> _getDownloadsDirectory() async {
@@ -578,22 +822,54 @@ class DownloaderProvider extends ChangeNotifier {
     task.status = "Conectando con YouTube...";
     notifyListeners();
 
-    var video = await _yt.videos.get(task.url).timeout(const Duration(seconds: 10));
-    task.title = video.title;
+    Video video;
+    final rawInput = task.url.trim();
+    final isDirectVideoUrlOrId = rawInput.startsWith('http://') ||
+        rawInput.startsWith('https://') ||
+        RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(rawInput);
+
+    if (isDirectVideoUrlOrId) {
+      try {
+        video = await _yt.videos.get(rawInput).timeout(const Duration(seconds: 10));
+      } catch (_) {
+        final fallbackQuery = (task.preferredTitle != null && task.preferredTitle!.isNotEmpty)
+            ? '${task.preferredArtist ?? ""} ${task.preferredTitle} official audio'
+            : '$rawInput official audio';
+        video = await _searchBestVideoByName(fallbackQuery);
+      }
+    } else {
+      // Caso canciones de la nube (Supabase guarda el nombre/artista)
+      task.status = 'Buscando "${task.preferredTitle ?? rawInput}" en la nube...';
+      notifyListeners();
+      video = await _searchBestVideoByName('$rawInput official audio');
+    }
+
+    task.preferredYoutubeId = video.id.value;
+    if (task.preferredTitle != null && task.preferredTitle!.trim().isNotEmpty) {
+      task.title = task.preferredTitle!.trim();
+    } else {
+      task.title = video.title;
+    }
     task.status = "Analizando mejor calidad de estudio...";
     notifyListeners();
-    _showProgressNotification(task, 0, "Preparando audio de alta calidad...");
+    if (!kIsWeb && Platform.isAndroid) {
+      _showProgressNotification(task, 0, "Preparando audio de alta calidad...");
+    }
 
     // Auto-etiquetado previo para búsqueda de máster de estudio
-    String author = video.author;
-    String songTitle = video.title;
+    String author = (task.preferredArtist != null && task.preferredArtist!.trim().isNotEmpty)
+        ? task.preferredArtist!.trim()
+        : video.author;
+    String songTitle = (task.preferredTitle != null && task.preferredTitle!.trim().isNotEmpty)
+        ? task.preferredTitle!.trim()
+        : video.title;
 
     author = author
         .replaceAll(RegExp(r'VEVO', caseSensitive: false), '')
         .replaceAll(RegExp(r'- Topic', caseSensitive: false), '')
         .trim();
 
-    if (songTitle.contains(' - ')) {
+    if (songTitle.contains(' - ') && (task.preferredArtist == null || task.preferredArtist!.isEmpty)) {
       var parts = songTitle.split(' - ');
       if (parts.length >= 2) {
         author = parts[0].trim();
@@ -607,6 +883,7 @@ class DownloaderProvider extends ChangeNotifier {
 
     // Buscar si existe la pista máster "- Topic" / "Official Audio" sin diálogos de videoclip
     Video audioSourceVideo = await _findStudioMasterIfBetter(video, author, songTitle);
+    task.preferredYoutubeId = audioSourceVideo.id.value;
 
     StreamManifest manifest;
     try {
@@ -627,7 +904,11 @@ class DownloaderProvider extends ChangeNotifier {
     if (streamInfo == null) throw Exception("No se encontró stream de audio compatible");
 
     Directory tempDir = await getTemporaryDirectory();
-    String safeTitle = video.title.replaceAll(RegExp(r'[<>:"/\\|?*]'), '').replaceAll(' ', '_');
+    final baseDisplayTitle = (task.preferredTitle != null && task.preferredTitle!.trim().isNotEmpty)
+        ? task.preferredTitle!.trim()
+        : video.title;
+    String safeTitle = baseDisplayTitle.replaceAll(RegExp(r'[<>:"/\\|?*]'), '').trim();
+    if (safeTitle.isEmpty) safeTitle = 'NovaMusic_${DateTime.now().millisecondsSinceEpoch}';
     final ext = streamInfo.container.name.toLowerCase();
     File tempVideoFile = File('${tempDir.path}/${task.id}.$ext');
 
@@ -651,7 +932,9 @@ class DownloaderProvider extends ChangeNotifier {
           task.progress = currentProgress.clamp(0.0, 1.0);
           task.status = 'Descargando: ${_formatBytes(receivedBytes)} / ${_formatBytes(totalBytes)}';
           notifyListeners();
-          _showProgressNotification(task, (task.progress * 100).toInt(), task.status);
+          if (!kIsWeb && Platform.isAndroid) {
+            _showProgressNotification(task, (task.progress * 100).toInt(), task.status);
+          }
         }
       }
     } finally {
@@ -666,7 +949,9 @@ class DownloaderProvider extends ChangeNotifier {
     task.status = 'Masterizando a MP3 320kbps...';
     task.progress = -1.0;
     notifyListeners();
-    _showProgressNotification(task, -1, "Masterizando audio de estudio 320kbps...");
+    if (!kIsWeb && Platform.isAndroid) {
+      _showProgressNotification(task, -1, "Masterizando audio de estudio 320kbps...");
+    }
 
     File tempThumbFile = File('${tempDir.path}/${task.id}_thumb.jpg');
     bool hasThumbnail = false;
@@ -683,12 +968,10 @@ class DownloaderProvider extends ChangeNotifier {
     if (await tempAudioFile.exists()) await tempAudioFile.delete();
 
     // Cadena de masterización en tiempo real sin buffering en RAM (evita que FFmpeg se congele):
-    // 1. silenceremove: quita tanto el silencio inicial como el silencio final / muerto
-    // 2. highpass=f=25: limpia frecuencias subsónicas que ensucian la mezcla
-    // 3. acompressor: acerca las voces/instrumentos lejanos y nivela el volumen
-    // 4. alimiter: evita saturación/clipping en picos fuertes (-0.4 dB)
     String afFilter = studioMasterAndTrimSilenceFilter;
-    String metadata = '-metadata title="$songTitle" -metadata artist="$author"';
+    final safeMetaTitle = baseDisplayTitle.replaceAll('"', '');
+    final safeMetaArtist = author.replaceAll('"', '');
+    String metadata = '-metadata title="$safeMetaTitle" -metadata artist="$safeMetaArtist"';
     String audioCodecFlags = '-ar 44100 -ac 2 -b:a 320k';
 
     String command;
@@ -723,61 +1006,61 @@ class DownloaderProvider extends ChangeNotifier {
     if (await tempThumbFile.exists()) await tempThumbFile.delete();
   }
 
-  Future<void> _downloadFallbackMethod(DownloadTask task, Function() onSuccess) async {
-    final response = await http.post(
-      Uri.parse('https://api.cobalt.tools/api/json'),
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-      },
-      body: jsonEncode({
-        'url': task.url,
-        'isAudioOnly': true,
-        'aFormat': 'mp3',
-      }),
-    ).timeout(const Duration(seconds: 10));
+  Future<void> _downloadFallbackSearchMethod(DownloadTask task, Function() onSuccess) async {
+    final fallbackQuery = (task.preferredTitle != null && task.preferredTitle!.isNotEmpty)
+        ? '${task.preferredArtist ?? ""} ${task.preferredTitle} audio'
+        : '${task.url} audio';
+    final results = (await _yt.search.search(fallbackQuery).timeout(const Duration(seconds: 12))).toList();
+    if (results.isEmpty) throw Exception('Sin resultados de respaldo');
 
-    if (response.statusCode != 200) throw Exception('API rechazada');
+    Video? workingVideo;
+    StreamInfo? workingStream;
+    for (final candidate in results.take(4)) {
+      try {
+        final manifest = await _fetchManifestSafely(candidate.id);
+        if (manifest.muxed.isNotEmpty) {
+          workingVideo = candidate;
+          workingStream = manifest.muxed.withHighestBitrate();
+          break;
+        } else if (manifest.audioOnly.isNotEmpty) {
+          workingVideo = candidate;
+          workingStream = manifest.audioOnly.withHighestBitrate();
+          break;
+        }
+      } catch (_) {}
+    }
 
-    final json = jsonDecode(response.body);
-    final downloadUrl = json['url'];
-    if (downloadUrl == null) throw Exception('No link');
+    if (workingVideo == null || workingStream == null) {
+      throw Exception('Ningún stream alternativo funcionó');
+    }
 
-    task.status = 'Descargando desde servidor de respaldo...';
-    task.progress = 0.0;
-    notifyListeners();
-
-    var request = http.Request('GET', Uri.parse(downloadUrl));
-    var streamedResponse = await request.send().timeout(const Duration(seconds: 10));
-
-    var totalBytes = streamedResponse.contentLength ?? 0;
-    var receivedBytes = 0;
+    task.preferredYoutubeId = workingVideo.id.value;
+    final baseDisplayTitle = (task.preferredTitle != null && task.preferredTitle!.trim().isNotEmpty)
+        ? task.preferredTitle!.trim()
+        : workingVideo.title;
+    task.title = baseDisplayTitle;
 
     Directory tempDir = await getTemporaryDirectory();
-    String safeTitle = 'NovaMusic_${DateTime.now().millisecondsSinceEpoch}';
-    File tempFile = File('${tempDir.path}/${task.id}.mp3');
+    final ext = workingStream.container.name.toLowerCase();
+    File tempVideoFile = File('${tempDir.path}/${task.id}_fb.$ext');
+    File tempAudioFile = File('${tempDir.path}/${task.id}_fb.mp3');
 
-    var fileStream = tempFile.openWrite(mode: FileMode.write);
+    var stream = _yt.videos.streamsClient.get(workingStream);
+    var fileStream = tempVideoFile.openWrite(mode: FileMode.write);
+    var totalBytes = workingStream.size.totalBytes;
+    var receivedBytes = 0;
 
     try {
-      await for (var data in streamedResponse.stream.timeout(const Duration(seconds: 12))) {
+      await for (var data in stream.timeout(const Duration(seconds: 15))) {
         receivedBytes += data.length;
         fileStream.add(data);
-
         if (totalBytes > 0) {
           double currentProgress = receivedBytes / totalBytes;
-          if (currentProgress - task.progress > 0.02 || currentProgress == 1.0) {
-            task.progress = currentProgress;
-            task.status = 'Respaldo: ${_formatBytes(receivedBytes)} / ${_formatBytes(totalBytes)}';
+          if (currentProgress - task.progress > 0.03 || currentProgress >= 1.0) {
+            task.progress = currentProgress.clamp(0.0, 1.0);
+            task.status = 'Descargando: ${_formatBytes(receivedBytes)} / ${_formatBytes(totalBytes)}';
             notifyListeners();
-            _showProgressNotification(task, (currentProgress * 100).toInt(), task.status);
           }
-        } else {
-          task.progress = -1.0;
-          task.status = 'Respaldo: ${_formatBytes(receivedBytes)} descargados...';
-          notifyListeners();
-          _showProgressNotification(task, -1, task.status);
         }
       }
     } finally {
@@ -785,11 +1068,23 @@ class DownloaderProvider extends ChangeNotifier {
       await fileStream.close();
     }
 
-    task.title = safeTitle;
-    notifyListeners();
-    await _autoSaveToDownloads(task, tempFile.path, '$safeTitle.mp3', onSuccess);
+    final safeMetaTitle = baseDisplayTitle.replaceAll('"', '');
+    final safeMetaArtist = (task.preferredArtist ?? workingVideo.author).replaceAll('"', '');
+    final cmd = '-y -i "${tempVideoFile.path}" -vn -ar 44100 -ac 2 -b:a 320k -metadata title="$safeMetaTitle" -metadata artist="$safeMetaArtist" "${tempAudioFile.path}"';
+    final session = await FFmpegKit.execute(cmd);
+    final rc = await session.getReturnCode();
 
-    if (await tempFile.exists()) await tempFile.delete();
+    String safeTitle = baseDisplayTitle.replaceAll(RegExp(r'[<>:"/\\|?*]'), '').trim();
+    if (safeTitle.isEmpty) safeTitle = 'NovaMusic_${DateTime.now().millisecondsSinceEpoch}';
+
+    if (ReturnCode.isSuccess(rc) && await tempAudioFile.exists()) {
+      await _autoSaveToDownloads(task, tempAudioFile.path, '$safeTitle.mp3', onSuccess);
+    } else {
+      await _autoSaveToDownloads(task, tempVideoFile.path, '$safeTitle.mp3', onSuccess);
+    }
+
+    if (await tempVideoFile.exists()) await tempVideoFile.delete();
+    if (await tempAudioFile.exists()) await tempAudioFile.delete();
   }
 
   Future<void> _autoSaveToDownloads(DownloadTask task, String tempPath, String fileName, Function() onSuccess) async {
@@ -811,7 +1106,7 @@ class DownloaderProvider extends ChangeNotifier {
       task.isDownloading = false;
       notifyListeners();
 
-      // Auto-registrar en la biblioteca en la nube del usuario actual
+      // Auto-registrar o actualizar youtube_id en la biblioteca en la nube del usuario actual
       try {
         final prefs = await SharedPreferences.getInstance();
         final username = prefs.getString('current_username');
@@ -819,35 +1114,51 @@ class DownloaderProvider extends ChangeNotifier {
           final supabase = Supabase.instance.client;
           final res = await supabase.from('user_preferences').select('library_songs').eq('username', username).maybeSingle();
           List<dynamic> existing = res != null && res['library_songs'] != null ? List.from(res['library_songs']) : [];
-          
-          String ytId = '';
-          final reg = RegExp(r'(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})');
-          final m = reg.firstMatch(task.url);
-          if (m != null) ytId = m.group(1) ?? '';
 
-          final cleanTitle = safeFileName
-              .replaceAll(RegExp(r'\.(mp3|m4a|wav)$', caseSensitive: false), '')
-              .replaceAll('_', ' ')
-              .trim();
+          String ytId = task.preferredYoutubeId ?? '';
+          if (ytId.isEmpty) {
+            final reg = RegExp(r'(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})');
+            final m = reg.firstMatch(task.url);
+            if (m != null) ytId = m.group(1) ?? '';
+          }
 
-          final normNew = cleanTitle.toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
+          final cleanTitle = (task.preferredTitle != null && task.preferredTitle!.trim().isNotEmpty)
+              ? task.preferredTitle!.trim()
+              : safeFileName
+                  .replaceAll(RegExp(r'\.(mp3|m4a|wav)$', caseSensitive: false), '')
+                  .replaceAll('_', ' ')
+                  .trim();
 
-          final exists = existing.any((item) {
-            if (item is! Map) return false;
+          final normNew = normalizeKey(cleanTitle);
+          bool updatedExisting = false;
+
+          for (int i = 0; i < existing.length; i++) {
+            final item = existing[i];
+            if (item is! Map) continue;
             final itemTitle = (item['title'] ?? '').toString();
-            final normExisting = itemTitle.toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
-            if (normExisting == normNew) return true;
-            if (ytId.isNotEmpty && item['youtube_id'] == ytId) return true;
-            return false;
-          });
+            final normExisting = normalizeKey(itemTitle);
+            if (normExisting == normNew || (ytId.isNotEmpty && item['youtube_id'] == ytId)) {
+              updatedExisting = true;
+              if (ytId.isNotEmpty && (item['youtube_id'] == null || item['youtube_id'].toString().isEmpty)) {
+                final updatedMap = Map<String, dynamic>.from(item);
+                updatedMap['youtube_id'] = ytId;
+                existing[i] = updatedMap;
+                await supabase.from('user_preferences').update({
+                  'library_songs': existing,
+                  'last_active': DateTime.now().toIso8601String(),
+                }).eq('username', username);
+              }
+              break;
+            }
+          }
 
-          if (!exists) {
+          if (!updatedExisting) {
             existing.add({
               'id': DateTime.now().millisecondsSinceEpoch,
               'title': cleanTitle,
-              'artist': 'Descargado',
+              'artist': task.preferredArtist ?? 'Descargado',
               'youtube_id': ytId,
-              'url': task.url,
+              'url': finalPath,
               'file_name': safeFileName,
               'added_at': DateTime.now().toIso8601String(),
             });
@@ -861,14 +1172,18 @@ class DownloaderProvider extends ChangeNotifier {
         print('Error registrando canción en nube: $e');
       }
 
-      _showSuccessNotification(task);
+      if (!kIsWeb && Platform.isAndroid) {
+        _showSuccessNotification(task);
+      }
       onSuccess();
     } catch (e) {
       task.status = 'Error al guardar archivo.';
       task.hasError = true;
       task.isDownloading = false;
       notifyListeners();
-      _showErrorNotification(task);
+      if (!kIsWeb && Platform.isAndroid) {
+        _showErrorNotification(task);
+      }
     }
   }
 
