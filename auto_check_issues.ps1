@@ -3,7 +3,10 @@
 )
 
 $ErrorActionPreference = "Continue"
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\src\flutter\bin"
+$env:JAVA_HOME = "C:\src\jdk-17"
+$env:ANDROID_HOME = "C:\src\android-sdk"
+$env:ANDROID_SDK_ROOT = "C:\src\android-sdk"
+$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\src\flutter\bin;C:\src\jdk-17\bin;C:\src\android-sdk\cmdline-tools\latest\bin;C:\src\android-sdk\platform-tools"
 
 $repo = "AngelGuevara04/NovaMusic"
 $projectDir = "c:\Users\ajgm1\.gemini\antigravity\scratch\NovaMusic"
@@ -103,8 +106,8 @@ $reportLines += "--------------------------------------------------------"
 $reportLines += "=== INSTRUCCIONES AUTOMATICAS PARA RESOLVER Y PUBLICAR EL PARCHE REMOTO ==="
 $reportLines += '1. Analiza cada incidencia/sugerencia listada arriba e implementa la solucion o mejora en el codigo de c:\Users\ajgm1\.gemini\antigravity\scratch\NovaMusic.'
 $reportLines += '2. Incrementa el numero de version (+N) tanto en pubspec.yaml como en lib/services/updater_service.dart (currentVersion).'
-$reportLines += '3. Compila la version Web/PC con C:\src\flutter\bin\flutter.bat build web --release y copia build\web\* hacia Instaladores\PC\NovaMusic-PC y Instaladores\PC\NovaMusic-App\NovaMusic-PC para actualizar la app de escritorio local.'
-$reportLines += '4. Haz git add -A, git commit y git push origin main, y lanza el workflow de GitHub Release (gh workflow run release.yml -f tag_name=v1.0.0+XX ...) para que se compile el APK de Android y quede publicada la actualizacion remota OTA.'
+$reportLines += '3. Compila la version Web/PC con C:\src\flutter\bin\flutter.bat build web --release --no-tree-shake-icons, actualiza Instaladores\PC\NovaMusic-PC y recompila NovaMusic.exe con python -m PyInstaller NovaMusic.spec --noconfirm.'
+$reportLines += '4. Compila el APK de Android con C:\src\flutter\bin\flutter.bat build apk --release --no-tree-shake-icons, haz git add -A, git commit, git push origin main y publica el Release remoto con gh release create v1.0.0+XX build\app\outputs\flutter-apk\app-release.apk Instaladores\PC\NovaMusic-PC-Escritorio-v1.0.0+XX.zip --repo AngelGuevara04/NovaMusic para que todos los dispositivos se actualicen de forma remota (OTA).'
 $reportLines += '5. Marca las sugerencias de Supabase como resueltas (status = completed mediante PATCH a https://pqvlwcqfjqrukgvwfhnh.supabase.co/rest/v1/app_suggestions?id=eq.<ID>) y cierra las Issues de GitHub con gh issue close <num> --repo AngelGuevara04/NovaMusic --comment "Resuelto automaticamente en la nueva version."'
 
 $promptText = $reportLines -join "`n"
