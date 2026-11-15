@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ReleaseInfo {
   final String tagName;
@@ -22,10 +24,56 @@ class ReleaseInfo {
 }
 
 class UpdaterService {
-  static const String currentVersion = '1.0.0+34';
+  static const String currentVersion = '1.0.0+35';
   static const String repoOwner = 'AngelGuevara04';
   static const String repoName = 'NovaMusic';
   static const MethodChannel _channel = MethodChannel('com.ajgm1.music/updater');
+  static bool _checkedThisSession = false;
+
+  /// Revisa automáticamente al abrir la app por primera vez en el día si hay una nueva versión
+  /// y muestra un cuadro de actualización de 1 solo toque muy fácil de usar.
+  static Future<void> checkAndShowDailyUpdateDialog(BuildContext context) async {
+    if (_checkedThisSession || kIsWeb) return;
+    _checkedThisSession = true;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final now = DateTime.now();
+      final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
+      final release = await checkForUpdate();
+      if (release == null) {
+        await prefs.setString('last_daily_update_check_date', todayStr);
+        return;
+      }
+
+      // Si el usuario ya pospuso ESTA misma versión hoy, no volver a insistir hasta mañana
+      // (pero si salió una versión nueva distinta hoy mismo, sí mostrarla de inmediato)
+      final dismissedKey = '${release.tagName}_$todayStr';
+      if (prefs.getString('dismissed_update_tag_date') == dismissedKey) {
+        return;
+      }
+
+      await prefs.setString('last_daily_update_check_date', todayStr);
+
+      if (!context.mounted) return;
+      await showUpdateDialog(context, release, todayStr: todayStr);
+    } catch (e) {
+      debugPrint('Error en revisión diaria de actualización: $e');
+    }
+  }
+
+  static Future<void> showUpdateDialog(
+    BuildContext context,
+    ReleaseInfo release, {
+    String? todayStr,
+  }) async {
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _AutoUpdateDialog(release: release, todayStr: todayStr),
+    );
+  }
 
   /// Checks GitHub Releases API for the latest version.
   static Future<ReleaseInfo?> checkForUpdate() async {
@@ -55,10 +103,9 @@ class UpdaterService {
         }
 
         if (downloadUrl != null) {
-          // Compare versions: format v1.0.0+X
           final cleanTag = tagName.replaceAll('v', '').trim();
           final cleanCurrent = currentVersion.replaceAll('v', '').trim();
-          
+
           if (_isNewerVersion(cleanTag, cleanCurrent)) {
             return ReleaseInfo(
               tagName: tagName,
@@ -76,7 +123,6 @@ class UpdaterService {
     return null;
   }
 
-  /// Parses versions like '1.0.0+16' and returns true if remote > current
   static bool _isNewerVersion(String remote, String current) {
     try {
       int remoteBuild = _extractBuildNumber(remote);
@@ -98,7 +144,6 @@ class UpdaterService {
     return 0;
   }
 
-  /// Downloads the APK and emits progress from 0.0 to 1.0.
   static Future<File?> downloadApk(
     String downloadUrl, {
     required Function(double progress, String status) onProgress,
@@ -147,7 +192,16 @@ class UpdaterService {
     }
   }
 
-  /// Launches the Android package installer for the downloaded APK file.
+  static Future<bool> canInstallPackages() async {
+    if (kIsWeb || !Platform.isAndroid) return true;
+    try {
+      final res = await _channel.invokeMethod<bool>('canInstallPackages');
+      return res ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
   static Future<bool> installApk(File apkFile) async {
     try {
       final result = await _channel.invokeMethod<bool>('installApk', {
@@ -158,5 +212,171 @@ class UpdaterService {
       debugPrint('Error invoking installApk: $e');
       return false;
     }
+  }
+}
+
+class _AutoUpdateDialog extends StatefulWidget {
+  final ReleaseInfo release;
+  final String? todayStr;
+
+  const _AutoUpdateDialog({
+    Key? key,
+    required this.release,
+    this.todayStr,
+  }) : super(key: key);
+
+  @override
+  State<_AutoUpdateDialog> createState() => _AutoUpdateDialogState();
+}
+
+class _AutoUpdateDialogState extends State<_AutoUpdateDialog> {
+  bool _isDownloading = false;
+  double _progress = 0.0;
+  String _statusText = '';
+  String? _errorText;
+
+  Future<void> _startOneTapUpdate() async {
+    setState(() {
+      _isDownloading = true;
+      _errorText = null;
+      _progress = 0.0;
+      _statusText = 'Preparando actualización...';
+    });
+
+    final apkFile = await UpdaterService.downloadApk(
+      widget.release.apkDownloadUrl,
+      onProgress: (p, status) {
+        if (mounted) {
+          setState(() {
+            _progress = p;
+            _statusText = status;
+          });
+        }
+      },
+    );
+
+    if (!mounted) return;
+
+    if (apkFile == null) {
+      setState(() {
+        _isDownloading = false;
+        _errorText = 'No se pudo descargar la actualización. Revisa tu internet e inténtalo de nuevo.';
+      });
+      return;
+    }
+
+    setState(() {
+      _statusText = 'Instalando automáticamente...';
+    });
+
+    final ok = await UpdaterService.installApk(apkFile);
+    if (!mounted) return;
+
+    if (ok) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() {
+        _isDownloading = false;
+        _errorText = 'No se pudo abrir el instalador automático.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: const Row(
+        children: [
+          Icon(Icons.system_update_rounded, color: Colors.deepPurpleAccent, size: 28),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '¡Nueva actualización lista!',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Versión ${widget.release.tagName}',
+            style: const TextStyle(color: Color(0xFFB388FF), fontWeight: FontWeight.bold, fontSize: 14),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            widget.release.releaseNotes.isNotEmpty
+                ? widget.release.releaseNotes
+                : 'Se encontraron mejoras de rendimiento, nuevas funciones y correcciones para tu aplicación.',
+            maxLines: 6,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white70, fontSize: 13.5, height: 1.35),
+          ),
+          if (_errorText != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              _errorText!,
+              style: const TextStyle(color: Colors.redAccent, fontSize: 12.5, fontWeight: FontWeight.w600),
+            ),
+          ],
+          if (_isDownloading) ...[
+            const SizedBox(height: 18),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: _progress >= 0 ? _progress : null,
+                minHeight: 8,
+                backgroundColor: Colors.white12,
+                color: Colors.deepPurpleAccent,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Center(
+              child: Text(
+                _statusText,
+                style: const TextStyle(color: Colors.cyanAccent, fontSize: 12.5, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ],
+      ),
+      actions: _isDownloading
+          ? []
+          : [
+              TextButton(
+                onPressed: () async {
+                  if (widget.todayStr != null) {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setString(
+                      'dismissed_update_tag_date',
+                      '${widget.release.tagName}_${widget.todayStr}',
+                    );
+                  }
+                  if (context.mounted) {
+                    Navigator.of(context).pop();
+                  }
+                },
+                child: const Text('Más tarde', style: TextStyle(color: Colors.white54)),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurpleAccent,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.download_rounded, size: 18),
+                label: const Text(
+                  'Actualizar ahora',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                onPressed: _startOneTapUpdate,
+              ),
+            ],
+    );
   }
 }

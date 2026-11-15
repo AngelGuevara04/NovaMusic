@@ -46,7 +46,9 @@ class AudioProvider with ChangeNotifier {
   SongModel? _currentPlayingSong;
   bool _isSingleTrackSource = false;
 
-  // ---- Modo Descubrimiento Inteligente (Recomendaciones basadas en descargas) ----
+  // ---- Modo Reproducción Inteligente (Normal / Aleatorio Local / Aleatorio Inteligente ✨) ----
+  String _playbackMode = 'normal'; // 'normal' | 'shuffle_local' | 'smart_shuffle'
+  int _smartShuffleLocalCounter = 0;
   bool _isDiscoveryMode = false;
   bool _isLoadingDiscovery = false;
   String _discoveryStatusText = '';
@@ -57,6 +59,21 @@ class AudioProvider with ChangeNotifier {
   bool _isCurrentDiscoverySaved = false;
   final Set<String> _sessionPlayedDiscoveryIds = {};
   bool _isAutoAdvancing = false;
+  bool _autoDeleteFromDevice = false;
+
+  String get playbackMode => _playbackMode;
+  bool get isSmartShuffle => _playbackMode == 'smart_shuffle';
+  bool get autoDeleteFromDevice => _autoDeleteFromDevice;
+  String get playbackModeLabel {
+    switch (_playbackMode) {
+      case 'shuffle_local':
+        return 'Aleatorio (Tu lista)';
+      case 'smart_shuffle':
+        return 'Aleatorio Inteligente ✨';
+      default:
+        return 'En orden';
+    }
+  }
 
   bool get isDiscoveryMode => _isDiscoveryMode;
   bool get isLoadingDiscovery => _isLoadingDiscovery;
@@ -1043,7 +1060,16 @@ class AudioProvider with ChangeNotifier {
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
     _currentSort = prefs.getString('pref_sort') ?? 'title';
-    _isShuffle = prefs.getBool('pref_shuffle') ?? false;
+    _autoDeleteFromDevice = prefs.getBool('auto_delete_from_device') ?? false;
+    final savedMode = prefs.getString('pref_playback_mode');
+    if (savedMode != null && (savedMode == 'normal' || savedMode == 'shuffle_local' || savedMode == 'smart_shuffle')) {
+      _playbackMode = savedMode;
+    } else {
+      final legacyShuffle = prefs.getBool('pref_shuffle') ?? false;
+      _playbackMode = legacyShuffle ? 'shuffle_local' : 'normal';
+    }
+    _isShuffle = _playbackMode != 'normal';
+    _isDiscoveryMode = _playbackMode == 'smart_shuffle';
     final savedLoop = prefs.getString('pref_loop') ?? 'off';
     if (savedLoop == 'one') {
       _loopMode = LoopMode.one;
@@ -1153,8 +1179,8 @@ class AudioProvider with ChangeNotifier {
         _isAutoAdvancing = true;
         Future.microtask(() async {
           try {
-            if (_isDiscoveryMode) {
-              await playNextDiscoverySong();
+            if (_playbackMode == 'smart_shuffle') {
+              await nextSong();
             } else if (_isSingleTrackSource && songs.isNotEmpty) {
               await nextSong();
             }
@@ -1190,6 +1216,21 @@ class AudioProvider with ChangeNotifier {
             _currentIndex = matchedIdx;
             _currentPlayingSong = songs[matchedIdx];
             if (changed) {
+              if (_playbackMode == 'smart_shuffle' && !_isAutoAdvancing) {
+                _smartShuffleLocalCounter++;
+                if (_smartShuffleLocalCounter >= 2) {
+                  _smartShuffleLocalCounter = 0;
+                  _isAutoAdvancing = true;
+                  Future.microtask(() async {
+                    try {
+                      await playNextDiscoverySong();
+                    } finally {
+                      _isAutoAdvancing = false;
+                    }
+                  });
+                  return;
+                }
+              }
               notifyListeners();
               if (_isPlaying) {
                 updateActiveDeviceInCloud();
@@ -1280,6 +1321,7 @@ class AudioProvider with ChangeNotifier {
         // 3. Auto-delete
         if (response['auto_delete'] != null) {
           final autoDel = response['auto_delete'] as bool;
+          _autoDeleteFromDevice = autoDel;
           await prefs.setBool('auto_delete_from_device', autoDel);
         }
 
@@ -1427,11 +1469,28 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
-  List<SongModel> get hiddenSongs => _allSongs.where((s) {
-        final norm = normalizeForDedup(s.title);
-        if (_deletedSongKeys.contains(norm)) return false;
-        return _hiddenSongIds.contains(s.id) || (norm.isNotEmpty && _hiddenSongKeys.contains(norm));
-      }).toList();
+  List<SongModel> get hiddenSongs {
+    if (_autoDeleteFromDevice) return [];
+    return _allSongs.where((s) {
+      final norm = normalizeForDedup(s.title);
+      if (_deletedSongKeys.contains(norm)) return false;
+      return _hiddenSongIds.contains(s.id) || (norm.isNotEmpty && _hiddenSongKeys.contains(norm));
+    }).toList();
+  }
+
+  Future<void> setAutoDeleteFromDevice(bool value) async {
+    _autoDeleteFromDevice = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('auto_delete_from_device', value);
+    if (value) {
+      // Si se activa el borrado directo del dispositivo, no tiene sentido guardar lista de canciones ocultas
+      _hiddenSongIds.clear();
+      _hiddenSongKeys.clear();
+      await _saveHiddenSongs();
+    }
+    await syncPreferencesToCloud();
+    notifyListeners();
+  }
 
   Future<void> fetchSongs() async {
     if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
@@ -1746,12 +1805,14 @@ class AudioProvider with ChangeNotifier {
     bool keepDiscoveryState = false,
   }) async {
     try {
-      if (!keepDiscoveryState && _isDiscoveryMode) {
-        _isDiscoveryMode = false;
+      if (!keepDiscoveryState && _currentDiscoverySong != null) {
         _currentDiscoverySong = null;
         _currentDiscoveryVideo = null;
         await _cleanupUnsavedDiscoveryTempFile();
         await DownloaderProvider.cancelDiscoveryNotification();
+        if (_playbackMode != 'smart_shuffle') {
+          _isDiscoveryMode = false;
+        }
       }
 
       _isSingleTrackSource = true;
@@ -1868,13 +1929,16 @@ class AudioProvider with ChangeNotifier {
     final currentList = songs;
     if (index < 0 || index >= currentList.length) return;
 
-    // Si estaba en Modo Descubrimiento y el usuario toca una canción de su lista, salir de Descubrimiento
-    if (_isDiscoveryMode || _currentDiscoverySong != null) {
-      _isDiscoveryMode = false;
+    // Si estaba sonando una canción recomendada y el usuario toca una canción de su lista,
+    // limpiar la canción recomendada actual pero MANTENER el modo Aleatorio Inteligente si estaba activo
+    if (_currentDiscoverySong != null) {
       _currentDiscoverySong = null;
       _currentDiscoveryVideo = null;
       await _cleanupUnsavedDiscoveryTempFile();
       await DownloaderProvider.cancelDiscoveryNotification();
+    }
+    if (_playbackMode != 'smart_shuffle') {
+      _isDiscoveryMode = false;
     }
 
     final targetSong = currentList[index];
@@ -1932,16 +1996,32 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> nextSong() async {
-    if (_isDiscoveryMode) {
-      await playNextDiscoverySong();
+    final currentList = songs;
+    if (_playbackMode == 'smart_shuffle') {
+      // En Modo Aleatorio Inteligente (tipo Spotify Smart Shuffle):
+      // Intercala canciones de tu lista en modo aleatorio con canciones nuevas recomendadas (cada 2 canciones locales)
+      if (isPlayingDiscoverySong && currentList.isNotEmpty) {
+        _smartShuffleLocalCounter = 1;
+        final nextIdx = Random().nextInt(currentList.length);
+        await playSong(nextIdx);
+        return;
+      }
+      _smartShuffleLocalCounter++;
+      if (currentList.isEmpty || _smartShuffleLocalCounter >= 2) {
+        _smartShuffleLocalCounter = 0;
+        await playNextDiscoverySong();
+        return;
+      }
+      final nextIdx = Random().nextInt(currentList.length);
+      await playSong(nextIdx);
       return;
     }
+
     if (!_isSingleTrackSource && _audioPlayer.hasNext) {
       await _audioPlayer.seekToNext();
       updateActiveDeviceInCloud();
       return;
     }
-    final currentList = songs;
     if (currentList.isNotEmpty) {
       int nextIdx;
       if (_isShuffle && currentList.length > 1) {
@@ -1990,34 +2070,19 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> toggleDiscoveryMode() async {
-    if (_isDiscoveryMode) {
-      await stopDiscoveryMode();
+    if (_playbackMode == 'smart_shuffle') {
+      await setPlaybackMode('normal');
     } else {
-      await startDiscoveryMode();
+      await setPlaybackMode('smart_shuffle');
     }
   }
 
   Future<void> startDiscoveryMode() async {
-    _isDiscoveryMode = true;
-    notifyListeners();
-    await playNextDiscoverySong();
+    await setPlaybackMode('smart_shuffle');
   }
 
   Future<void> stopDiscoveryMode() async {
-    _isDiscoveryMode = false;
-    _isLoadingDiscovery = false;
-    _discoveryStatusText = '';
-    final wasDiscovery = isPlayingDiscoverySong;
-    _currentDiscoverySong = null;
-    _currentDiscoveryVideo = null;
-    await _cleanupUnsavedDiscoveryTempFile();
-    await DownloaderProvider.cancelDiscoveryNotification();
-    if (wasDiscovery) {
-      await _audioPlayer.stop();
-      _isPlaying = false;
-      _currentPlayingSong = null;
-    }
-    notifyListeners();
+    await setPlaybackMode('normal');
   }
 
   bool _isGenericArtistName(String? artist) {
@@ -2149,24 +2214,46 @@ class AudioProvider with ChangeNotifier {
         }
       }
 
-      // Construir consultas variadas para descubrir canciones nuevas de esos artistas o estilo
+      // Construir consultas inteligentes (tipo Spotify Smart Shuffle) basadas en tu lista:
+      // 1) Mismo artista, 2) Artista similar / colaboración, o 3) Mismo género / estilo musical
       final List<String> queries = [];
+      String strategyReason = 'Recomendada para ti';
+
       if (targetArtist.isNotEmpty) {
-        final modifiers = [
-          '$targetArtist canciones official audio',
-          '$targetArtist exitos official audio',
-          '$targetArtist official audio',
-          '$targetArtist mix audio oficial',
-        ];
-        modifiers.shuffle(rand);
-        queries.addAll(modifiers);
+        final strategy = rand.nextInt(3); // 0: mismo artista, 1: artista similar/colaboración, 2: mismo género/estilo
+        if (strategy == 0) {
+          strategyReason = 'Más de $targetArtist';
+          queries.addAll([
+            '$targetArtist mejores canciones official audio',
+            '$targetArtist exitos official audio',
+            '$targetArtist official audio',
+          ]);
+        } else if (strategy == 1) {
+          strategyReason = 'Artistas similares a $targetArtist';
+          queries.addAll([
+            '$targetArtist feat official audio',
+            'artistas similares a $targetArtist official audio',
+            'mix $targetArtist y similares official audio',
+            '$targetArtist exitos official audio',
+          ]);
+        } else {
+          strategyReason = 'Mismo género • Estilo $seedLabel';
+          queries.addAll([
+            'canciones estilo $targetArtist official audio',
+            'mix genero $targetArtist official audio',
+            '$targetArtist radio mix official audio',
+            '$targetArtist canciones official audio',
+          ]);
+        }
       } else if (seedLabel != 'Tu biblioteca') {
+        strategyReason = 'Similar a "$seedLabel"';
         queries.add('$seedLabel mix official audio');
       } else {
+        strategyReason = 'Descubrimiento musical';
         queries.add('exitos musica popular official audio');
       }
 
-      _discoveryStatusText = 'Buscando recomendación basada en $seedLabel...';
+      _discoveryStatusText = 'Buscando: $strategyReason...';
       notifyListeners();
 
       Video? chosenVideo;
@@ -2210,7 +2297,7 @@ class AudioProvider with ChangeNotifier {
       final displayTitle = cleanTitle.isNotEmpty ? cleanTitle : chosenVideo.title.trim();
       final displayArtist = cleanAuthor.isNotEmpty ? cleanAuthor : chosenVideo.author.trim();
 
-      _currentDiscoverySeedInfo = 'Basada en $seedLabel';
+      _currentDiscoverySeedInfo = strategyReason;
 
       // En Android: descargar temporalmente y aplicar masterización + recorte de silencio inicial y final
       if (!kIsWeb && Platform.isAndroid) {
@@ -2515,12 +2602,63 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> toggleShuffle() async {
-    _isShuffle = !_isShuffle;
+    await cyclePlaybackMode();
+  }
+
+  /// Alterna entre: 'normal' (En orden) -> 'shuffle_local' (Aleatorio local) -> 'smart_shuffle' (Aleatorio Inteligente ✨)
+  Future<void> cyclePlaybackMode() async {
+    if (_playbackMode == 'normal') {
+      await setPlaybackMode('shuffle_local');
+    } else if (_playbackMode == 'shuffle_local') {
+      await setPlaybackMode('smart_shuffle');
+    } else {
+      await setPlaybackMode('normal');
+    }
+  }
+
+  Future<void> setPlaybackMode(String mode) async {
+    _playbackMode = mode;
+    _isShuffle = mode != 'normal';
+    _isDiscoveryMode = mode == 'smart_shuffle';
+    _smartShuffleLocalCounter = 0;
+
+    if (mode != 'smart_shuffle') {
+      _isLoadingDiscovery = false;
+      _discoveryStatusText = '';
+      if (isPlayingDiscoverySong) {
+        _currentDiscoverySong = null;
+        _currentDiscoveryVideo = null;
+        await _cleanupUnsavedDiscoveryTempFile();
+        await DownloaderProvider.cancelDiscoveryNotification();
+        if (songs.isNotEmpty) {
+          final nextIdx = _isShuffle ? Random().nextInt(songs.length) : 0;
+          await playSong(nextIdx);
+        } else {
+          await _audioPlayer.stop();
+          _isPlaying = false;
+          _currentPlayingSong = null;
+        }
+      }
+    } else {
+      // Si activa Aleatorio Inteligente y no hay nada reproduciéndose, comenzar de inmediato
+      if (!_isPlaying && currentSong == null) {
+        if (songs.isNotEmpty) {
+          _smartShuffleLocalCounter = 1;
+          await playSong(Random().nextInt(songs.length));
+        } else {
+          await playNextDiscoverySong();
+        }
+      }
+    }
+
     await _audioPlayer.setShuffleModeEnabled(_isShuffle);
-    if (_isShuffle) {
-      await _audioPlayer.shuffle();
+    if (_isShuffle && _playlist != null) {
+      try {
+        await _audioPlayer.shuffle();
+      } catch (_) {}
     }
     final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('pref_playback_mode', _playbackMode);
     await prefs.setBool('pref_shuffle', _isShuffle);
     notifyListeners();
   }
@@ -2621,13 +2759,12 @@ class AudioProvider with ChangeNotifier {
   Future<bool> deletePhysicalSong(SongModel song) async {
     final norm = normalizeForDedup(song.title);
 
-    // 1. Marcar como eliminada permanentemente para que ni MediaStore ni la nube la revivan
-    if (!_hiddenSongIds.contains(song.id)) {
-      _hiddenSongIds.add(song.id);
-    }
+    // 1. Marcar como eliminada permanentemente para que ni MediaStore ni la nube la revivan,
+    // pero NO guardarla en la lista de "Canciones ocultas" (_hiddenSongIds / _hiddenSongKeys)
+    _hiddenSongIds.remove(song.id);
     if (norm.isNotEmpty) {
       _deletedSongKeys.add(norm);
-      _hiddenSongKeys.add(norm);
+      _hiddenSongKeys.remove(norm);
     }
 
     // 2. Quitar de memoria, favoritas y biblioteca en la nube

@@ -1,9 +1,11 @@
 import '../widgets/suggestion_dialog.dart';
 import '../widgets/password_dialogs.dart';
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../providers/audio_provider.dart';
 import '../services/updater_service.dart';
+import 'cloud_backup_screen.dart';
 import 'hidden_songs_screen.dart';
 import 'equalizer_screen.dart';
 import 'login_screen.dart';
@@ -44,11 +46,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _toggleAutoDelete(bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('auto_delete_from_device', value);
     setState(() {
       _autoDelete = value;
     });
+    if (mounted) {
+      await Provider.of<AudioProvider>(context, listen: false).setAutoDeleteFromDevice(value);
+    }
   }
 
   Future<void> _checkForUpdate() async {
@@ -109,7 +112,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (apkFile != null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Instalando actualización...')),
+        const SnackBar(content: Text('Instalando actualización automáticamente...')),
       );
       final success = await UpdaterService.installApk(apkFile);
       if (!success && mounted) {
@@ -127,6 +130,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final primaryColor = Theme.of(context).primaryColor;
+    final audioProvider = Provider.of<AudioProvider>(context);
 
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
@@ -143,114 +147,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : ListView(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               children: [
-                _buildSectionHeader('GESTIÓN DE CANCIONES'),
-                Card(
-                  color: const Color(0xFF1E1E1E),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: Column(
-                    children: [
-                      SwitchListTile(
-                        activeColor: primaryColor,
-                        title: const Text(
-                          'Borrado directo de memoria',
-                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                        ),
-                        subtitle: const Text(
-                          'Al deslizar una canción, borrar el archivo directamente del almacenamiento del celular sin preguntar.',
-                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13, height: 1.3),
-                        ),
-                        value: _autoDelete,
-                        onChanged: _toggleAutoDelete,
-                      ),
-                      const Divider(color: Colors.white12, height: 1),
-                      ListTile(
-                        leading: const Icon(Icons.visibility_off_outlined, color: Colors.redAccent),
-                        title: const Text('Canciones Ocultas', style: TextStyle(color: Colors.white)),
-                        subtitle: const Text(
-                          'Revisa y restaura canciones quitadas de la lista',
-                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
-                        ),
-                        trailing: const Icon(Icons.chevron_right, color: Colors.white38),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => const HiddenSongsScreen()),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _buildSectionHeader('AUDIO Y EFECTOS'),
-                Card(
-                  color: const Color(0xFF1E1E1E),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: ListTile(
-                    leading: const Icon(Icons.equalizer, color: Colors.deepPurpleAccent),
-                    title: const Text('Ecualizador y Audio', style: TextStyle(color: Colors.white)),
-                    subtitle: const Text(
-                      'Ajustes de frecuencias y refuerzo de graves',
-                      style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
-                    ),
-                    trailing: const Icon(Icons.chevron_right, color: Colors.white38),
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const EqualizerScreen()),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _buildSectionHeader('COMUNIDAD Y SUGERENCIAS'),
-                Card(
-                  color: const Color(0xFF1E1E1E),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: ListTile(
-                    leading: const Icon(Icons.lightbulb_outline, color: Colors.amberAccent),
-                    title: const Text('Buzón de sugerencias y reportes', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                    subtitle: const Text(
-                      'Envía tus ideas o reporta fallos para las próximas versiones',
-                      style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
-                    ),
-                    trailing: const Icon(Icons.chevron_right, color: Colors.white38),
-                    onTap: () => showSuggestionDialog(context),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _buildSectionHeader('SEGURIDAD Y CUENTA'),
-                Card(
-                  color: const Color(0xFF1E1E1E),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: ListTile(
-                    leading: const Icon(Icons.lock_reset_rounded, color: Color(0xFFB388FF)),
-                    title: Text(
-                      _currentUsername.isNotEmpty
-                          ? 'Actualizar Contraseña (@$_currentUsername)'
-                          : 'Iniciar Sesión / Crear Cuenta',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                    ),
-                    subtitle: Text(
-                      _currentUsername.isNotEmpty
-                          ? 'Cambia tu contraseña actual o actualiza tu PIN de recuperación'
-                          : 'Actualmente estás en modo invitado. Inicia sesión para proteger tu cuenta.',
-                      style: const TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
-                    ),
-                    trailing: const Icon(Icons.chevron_right, color: Colors.white38),
-                    onTap: () {
-                      if (_currentUsername.isNotEmpty) {
-                        showChangePasswordDialog(context, _currentUsername);
-                      } else {
-                        Navigator.pushReplacement(
-                          context,
-                          MaterialPageRoute(builder: (context) => const LoginScreen()),
-                        );
-                      }
-                    },
-                  ),
-                ),
-                const SizedBox(height: 24),
                 _buildSectionHeader('ACTUALIZACIONES DE LA APLICACIÓN'),
                 Card(
                   color: const Color(0xFF1E1E1E),
@@ -268,7 +164,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 color: primaryColor.withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(12),
                               ),
-                              child: Icon(Icons.system_update_alt, color: primaryColor, size: 28),
+                              child: Icon(Icons.system_update_alt, color: primaryColor, size: 26),
                             ),
                             const SizedBox(width: 14),
                             Expanded(
@@ -276,12 +172,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   const Text(
-                                    'NovaMusic OTA',
+                                    'Actualización Automática',
                                     style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
                                   ),
                                   Text(
-                                    'Versión instalada: v${UpdaterService.currentVersion}',
-                                    style: const TextStyle(color: Color(0xFFE0E0E0), fontSize: 13, fontWeight: FontWeight.w500),
+                                    'Versión actual: v${UpdaterService.currentVersion}',
+                                    style: const TextStyle(color: Color(0xFFE0E0E0), fontSize: 13),
                                   ),
                                 ],
                               ),
@@ -325,14 +221,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                           ),
                         ],
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 14),
                         Row(
                           children: [
                             Expanded(
                               child: OutlinedButton.icon(
                                 style: OutlinedButton.styleFrom(
                                   side: BorderSide(color: primaryColor),
-                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  padding: const EdgeInsets.symmetric(vertical: 11),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                 ),
                                 onPressed: _isCheckingUpdate || _isDownloadingUpdate ? null : _checkForUpdate,
@@ -344,7 +240,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       )
                                     : const Icon(Icons.refresh, color: Colors.white),
                                 label: Text(
-                                  _isCheckingUpdate ? 'Buscando...' : 'Buscar actualización',
+                                  _isCheckingUpdate ? 'Revisando...' : 'Revisar si hay actualización',
                                   style: const TextStyle(color: Colors.white),
                                 ),
                               ),
@@ -356,12 +252,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: primaryColor,
                                     foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    padding: const EdgeInsets.symmetric(vertical: 11),
                                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                   ),
                                   onPressed: _startDownloadAndInstall,
                                   icon: const Icon(Icons.download),
-                                  label: const Text('Actualizar'),
+                                  label: const Text('Instalar ahora'),
                                 ),
                               ),
                             ],
@@ -371,6 +267,137 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 22),
+                _buildSectionHeader('TU MÚSICA Y ALMACENAMIENTO'),
+                Card(
+                  color: const Color(0xFF1E1E1E),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.cloud_done_outlined, color: Colors.cyanAccent),
+                        title: const Text(
+                          'Copia de Seguridad en la Nube',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: const Text(
+                          'Descarga tus canciones respaldadas o administra tu nube',
+                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                        ),
+                        trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const CloudBackupScreen()),
+                          );
+                        },
+                      ),
+                      const Divider(color: Colors.white12, height: 1),
+                      SwitchListTile(
+                        activeColor: primaryColor,
+                        title: const Text(
+                          'Borrar también del dispositivo al quitar',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: const Text(
+                          'Si está activo, al deslizar una canción para quitarla se borra el archivo directamente de la memoria (sin guardarla en ocultas).',
+                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 12.5, height: 1.3),
+                        ),
+                        value: _autoDelete,
+                        onChanged: _toggleAutoDelete,
+                      ),
+                      if (!_autoDelete) ...[
+                        const Divider(color: Colors.white12, height: 1),
+                        ListTile(
+                          leading: const Icon(Icons.visibility_off_outlined, color: Colors.amberAccent),
+                          title: const Text('Canciones Ocultas', style: TextStyle(color: Colors.white)),
+                          subtitle: Text(
+                            audioProvider.hiddenSongs.isEmpty
+                                ? 'No tienes canciones ocultas actualmente'
+                                : 'Buscar y restaurar (${audioProvider.hiddenSongs.length} ocultas)',
+                            style: const TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                          ),
+                          trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const HiddenSongsScreen()),
+                            );
+                          },
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 22),
+                _buildSectionHeader('SONIDO Y COMUNIDAD'),
+                Card(
+                  color: const Color(0xFF1E1E1E),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.equalizer, color: Colors.deepPurpleAccent),
+                        title: const Text('Ecualizador y Refuerzo de Graves', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                        subtitle: const Text(
+                          'Personaliza el sonido a tu gusto',
+                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                        ),
+                        trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const EqualizerScreen()),
+                          );
+                        },
+                      ),
+                      const Divider(color: Colors.white12, height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.lightbulb_outline, color: Colors.amberAccent),
+                        title: const Text('Enviar Sugerencia o Reportar Fallo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                        subtitle: const Text(
+                          'Tus sugerencias se revisan y aplican automáticamente',
+                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                        ),
+                        trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                        onTap: () => showSuggestionDialog(context),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 22),
+                _buildSectionHeader('CUENTA Y SEGURIDAD'),
+                Card(
+                  color: const Color(0xFF1E1E1E),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: ListTile(
+                    leading: const Icon(Icons.lock_reset_rounded, color: Color(0xFFB388FF)),
+                    title: Text(
+                      _currentUsername.isNotEmpty
+                          ? 'Cambiar Contraseña (@$_currentUsername)'
+                          : 'Iniciar Sesión / Crear Cuenta',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      _currentUsername.isNotEmpty
+                          ? 'Actualiza tu contraseña o tu PIN de recuperación'
+                          : 'Inicia sesión para respaldar tus canciones en la nube',
+                      style: const TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                    ),
+                    trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                    onTap: () {
+                      if (_currentUsername.isNotEmpty) {
+                        showChangePasswordDialog(context, _currentUsername);
+                      } else {
+                        Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(builder: (context) => const LoginScreen()),
+                        );
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(height: 24),
               ],
             ),
     );
@@ -385,7 +412,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           color: Color(0xFFCE93D8),
           fontSize: 12,
           fontWeight: FontWeight.bold,
-          letterSpacing: 1.2,
+          letterSpacing: 1.1,
         ),
       ),
     );

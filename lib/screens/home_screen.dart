@@ -3,6 +3,7 @@ import 'cloud_backup_screen.dart';
 import '../widgets/suggestion_dialog.dart';
 import '../widgets/password_dialogs.dart';
 import '../widgets/device_output_dialog.dart';
+import '../services/updater_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/audio_provider.dart';
@@ -28,6 +29,14 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchController = TextEditingController();
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      UpdaterService.checkAndShowDailyUpdateDialog(context);
+    });
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
@@ -39,32 +48,41 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E1E),
-          title: const Text('Temporizador de Apagado', style: TextStyle(color: Colors.white)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          title: const Row(
+            children: [
+              Icon(Icons.bedtime_outlined, color: Colors.deepPurpleAccent),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text('Apagado Automático', style: TextStyle(color: Colors.white, fontSize: 18)),
+              ),
+            ],
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (provider.sleepTimerEndTime != null)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    'Temporizador activo',
-                    style: TextStyle(color: Colors.deepPurpleAccent),
-                  ),
-                ),
+              const Text(
+                'Elige en cuánto tiempo quieres que la música se detenga sola:',
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
               ...[15, 30, 45, 60].map((minutes) => ListTile(
-                title: Text('$minutes minutos', style: const TextStyle(color: Colors.white)),
-                leading: const Icon(Icons.bedtime_outlined, color: Colors.deepPurpleAccent),
-                onTap: () {
-                  provider.setSleepTimer(minutes);
-                  Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('La música se detendrá en $minutes minutos 🌙')),
-                  );
-                },
-              )),
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('$minutes minutos', style: const TextStyle(color: Colors.white)),
+                    leading: const Icon(Icons.timer_outlined, color: Colors.deepPurpleAccent),
+                    onTap: () {
+                      provider.setSleepTimer(minutes);
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('La música se detendrá en $minutes minutos 🌙')),
+                      );
+                    },
+                  )),
               if (provider.sleepTimerEndTime != null)
                 ListTile(
-                  title: const Text('Cancelar temporizador', style: TextStyle(color: Colors.redAccent)),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Desactivar temporizador', style: TextStyle(color: Colors.redAccent)),
                   leading: const Icon(Icons.cancel_outlined, color: Colors.redAccent),
                   onTap: () {
                     provider.cancelSleepTimer();
@@ -109,8 +127,8 @@ class _HomeScreenState extends State<HomeScreen> {
               Row(
                 children: [
                   Container(
-                    width: 58,
-                    height: 58,
+                    width: 54,
+                    height: 54,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       gradient: LinearGradient(
@@ -121,81 +139,32 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     alignment: Alignment.center,
                     child: isGuest
-                        ? const Icon(Icons.person, color: Colors.white, size: 30)
+                        ? const Icon(Icons.person, color: Colors.white, size: 28)
                         : Text(
                             initial,
-                            style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold),
+                            style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
                           ),
                   ),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 14),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           isGuest ? 'Modo Invitado' : '@$username',
-                          style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                          style: const TextStyle(color: Colors.white, fontSize: 19, fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Icon(
-                              isGuest ? Icons.cloud_off : Icons.cloud_done,
-                              color: isGuest ? Colors.orangeAccent : const Color(0xFF69F0AE),
-                              size: 16,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              isGuest ? 'Sin respaldo en la nube' : 'Perfil sincronizado en Supabase',
-                              style: TextStyle(
-                                color: isGuest ? Colors.orangeAccent : const Color(0xFF69F0AE),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
+                        Text(
+                          isGuest
+                              ? 'Inicia sesión para respaldar tu música en la nube'
+                              : '${provider.totalSongsCount} canciones en tu lista • ${provider.uniqueCloudLibrarySongs.length} en la nube',
+                          style: TextStyle(
+                            color: isGuest ? Colors.orangeAccent : Colors.white70,
+                            fontSize: 12.5,
+                          ),
                         ),
                       ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 22),
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildStatCard(
-                      icon: Icons.library_music,
-                      color: Colors.deepPurpleAccent,
-                      title: 'Total',
-                      value: '${provider.totalSongsCount}',
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _buildStatCard(
-                      icon: Icons.phone_android,
-                      color: Colors.greenAccent,
-                      title: 'Locales',
-                      value: '${provider.localSongsCount}',
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _buildStatCard(
-                      icon: Icons.cloud_outlined,
-                      color: Colors.lightBlueAccent,
-                      title: 'En Nube',
-                      value: '${provider.cloudLibrarySongs.length}',
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _buildStatCard(
-                      icon: Icons.favorite,
-                      color: Colors.redAccent,
-                      title: 'Favoritas',
-                      value: '${provider.totalFavoritesCount}',
                     ),
                   ),
                 ],
@@ -204,49 +173,24 @@ class _HomeScreenState extends State<HomeScreen> {
               if (!isGuest) ...[
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.cloud_upload_outlined, color: Colors.lightBlueAccent),
-                  title: const Text('Sobrescribir Nube de 0 (Solo mi lista actual)', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('Limpia canciones viejas/borradas y respalda solo las canciones de tu lista actual', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                  onTap: () async {
+                  leading: const Icon(Icons.cloud_done_outlined, color: Colors.cyanAccent),
+                  title: const Text('Ver mi Copia de Seguridad en la Nube', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                  subtitle: const Text('Descarga tus canciones o administra tu respaldo', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                  onTap: () {
                     Navigator.pop(ctx);
-                    final ok = await provider.overwriteCloudLibraryWithDeviceSongs();
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            ok
-                                ? '☁️ Nube actualizada desde 0 con tus ${provider.totalSongsCount} canciones actuales'
-                                : 'Error al actualizar la nube',
-                          ),
-                          backgroundColor: ok ? const Color(0xFF7C4DFF) : Colors.redAccent,
-                        ),
-                      );
-                    }
-                  },
-                ),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.sync, color: Colors.deepPurpleAccent),
-                  title: const Text('Sincronizar ahora con la Nube', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('Respalda tus favoritas y configuración', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    await provider.syncPreferencesToCloud();
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('☁️ Perfil y favoritas sincronizados con éxito en la nube'),
-                          backgroundColor: Color(0xFF262626),
-                        ),
-                      );
-                    }
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const CloudBackupScreen()),
+                    );
                   },
                 ),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.lock_reset_rounded, color: Color(0xFFB388FF)),
-                  title: const Text('Actualizar Contraseña', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('Cambia tu contraseña o configura tu PIN de recuperación', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  title: const Text('Cambiar mi Contraseña', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('Actualiza tu contraseña o PIN de acceso', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  trailing: const Icon(Icons.chevron_right, color: Colors.white38),
                   onTap: () {
                     Navigator.pop(ctx);
                     if (username != null && username.isNotEmpty) {
@@ -258,11 +202,15 @@ class _HomeScreenState extends State<HomeScreen> {
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: Icon(isGuest ? Icons.login : Icons.swap_horiz, color: Colors.orangeAccent),
-                title: Text(isGuest ? 'Iniciar Sesión / Crear Usuario' : 'Cambiar de Usuario', style: const TextStyle(color: Colors.white)),
+                title: Text(
+                  isGuest ? 'Iniciar Sesión / Crear Cuenta' : 'Cambiar de Cuenta',
+                  style: const TextStyle(color: Colors.white),
+                ),
                 subtitle: Text(
-                  isGuest ? 'Guarda tus canciones y favoritas en tu propia cuenta' : 'Accede con otro perfil musical',
+                  isGuest ? 'Guarda tus canciones para recuperarlas en cualquier celular o PC' : 'Entrar con otro usuario',
                   style: const TextStyle(color: Colors.white54, fontSize: 12),
                 ),
+                trailing: const Icon(Icons.chevron_right, color: Colors.white38),
                 onTap: () async {
                   Navigator.pop(ctx);
                   final prefs = await SharedPreferences.getInstance();
@@ -275,42 +223,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
                 },
               ),
-              const SizedBox(height: 8),
             ],
           ),
         );
       },
-    );
-  }
-
-  Widget _buildStatCard({
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String value,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFF282828),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: color, size: 22),
-          const SizedBox(height: 6),
-          Text(
-            value,
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            title,
-            style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 11),
-          ),
-        ],
-      ),
     );
   }
 
@@ -324,7 +240,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Icon(Icons.sort, color: Colors.deepPurpleAccent),
             SizedBox(width: 8),
-            Text('Ordenar canciones', style: TextStyle(color: Colors.white, fontSize: 18)),
+            Text('Ordenar mis canciones', style: TextStyle(color: Colors.white, fontSize: 18)),
           ],
         ),
         content: Column(
@@ -332,7 +248,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             ListTile(
               leading: Icon(Icons.sort_by_alpha, color: provider.currentSort == 'title' ? Colors.deepPurpleAccent : Colors.white70),
-              title: Text('Por Título', style: TextStyle(color: provider.currentSort == 'title' ? Colors.deepPurpleAccent : Colors.white, fontWeight: provider.currentSort == 'title' ? FontWeight.bold : FontWeight.normal)),
+              title: Text('Por Nombre (A - Z)', style: TextStyle(color: provider.currentSort == 'title' ? Colors.deepPurpleAccent : Colors.white, fontWeight: provider.currentSort == 'title' ? FontWeight.bold : FontWeight.normal)),
               trailing: provider.currentSort == 'title' ? const Icon(Icons.check, color: Colors.deepPurpleAccent) : null,
               onTap: () {
                 provider.sortSongsBy('title');
@@ -340,7 +256,7 @@ class _HomeScreenState extends State<HomeScreen> {
               },
             ),
             ListTile(
-              leading: Icon(Icons.person, color: provider.currentSort == 'artist' ? Colors.deepPurpleAccent : Colors.white70),
+              leading: Icon(Icons.person_outline, color: provider.currentSort == 'artist' ? Colors.deepPurpleAccent : Colors.white70),
               title: Text('Por Artista', style: TextStyle(color: provider.currentSort == 'artist' ? Colors.deepPurpleAccent : Colors.white, fontWeight: provider.currentSort == 'artist' ? FontWeight.bold : FontWeight.normal)),
               trailing: provider.currentSort == 'artist' ? const Icon(Icons.check, color: Colors.deepPurpleAccent) : null,
               onTap: () {
@@ -350,12 +266,80 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             ListTile(
               leading: Icon(Icons.access_time, color: provider.currentSort == 'date' ? Colors.deepPurpleAccent : Colors.white70),
-              title: Text('Por Fecha (Recientes)', style: TextStyle(color: provider.currentSort == 'date' ? Colors.deepPurpleAccent : Colors.white, fontWeight: provider.currentSort == 'date' ? FontWeight.bold : FontWeight.normal)),
+              title: Text('Más recientes primero', style: TextStyle(color: provider.currentSort == 'date' ? Colors.deepPurpleAccent : Colors.white, fontWeight: provider.currentSort == 'date' ? FontWeight.bold : FontWeight.normal)),
               trailing: provider.currentSort == 'date' ? const Icon(Icons.check, color: Colors.deepPurpleAccent) : null,
               onTap: () {
                 provider.sortSongsBy('date');
                 Navigator.pop(ctx);
               },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlaybackModeButton(BuildContext context, AudioProvider audioProvider) {
+    final mode = audioProvider.playbackMode;
+    IconData icon;
+    String label;
+    Color bgColor;
+    Color fgColor;
+    Color borderColor;
+
+    if (mode == 'smart_shuffle') {
+      icon = Icons.auto_awesome;
+      label = 'Inteligente ✨';
+      bgColor = const Color(0xFF2B2312);
+      fgColor = Colors.amberAccent;
+      borderColor = Colors.amberAccent.withOpacity(0.6);
+    } else if (mode == 'shuffle_local') {
+      icon = Icons.shuffle_rounded;
+      label = 'Aleatorio';
+      bgColor = Colors.deepPurpleAccent.withOpacity(0.22);
+      fgColor = const Color(0xFFB388FF);
+      borderColor = Colors.deepPurpleAccent.withOpacity(0.6);
+    } else {
+      icon = Icons.repeat_rounded;
+      label = 'En orden';
+      bgColor = const Color(0xFF242424);
+      fgColor = Colors.white70;
+      borderColor = Colors.white12;
+    }
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () async {
+        await audioProvider.cyclePlaybackMode();
+        if (!context.mounted) return;
+        String msg;
+        if (audioProvider.playbackMode == 'smart_shuffle') {
+          msg = '✨ Modo Inteligente: Mezcla tu lista con canciones nuevas similares';
+        } else if (audioProvider.playbackMode == 'shuffle_local') {
+          msg = '🔀 Modo Aleatorio: Reproduciendo solo tu lista al azar';
+        } else {
+          msg = '▶️ Reproducción en orden normal';
+        }
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: borderColor),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: fgColor),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(color: fgColor, fontSize: 12, fontWeight: FontWeight.bold),
             ),
           ],
         ),
@@ -376,8 +360,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 autofocus: true,
                 style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
-                  hintText: 'Buscar canción...',
-                  hintStyle: const TextStyle(color: Colors.white70),
+                  hintText: 'Buscar por canción o artista...',
+                  hintStyle: TextStyle(color: Colors.white70),
                   border: InputBorder.none,
                 ),
                 onChanged: (value) {
@@ -410,13 +394,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ? [Colors.grey.shade700, Colors.grey.shade600]
                                     : [Colors.deepPurpleAccent, Colors.purpleAccent],
                               ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: (isGuest ? Colors.grey : Colors.deepPurpleAccent).withValues(alpha: 0.4),
-                                  blurRadius: 6,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
                             ),
                             alignment: Alignment.center,
                             child: isGuest
@@ -443,26 +420,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
-                              Row(
-                                children: [
-                                  Container(
-                                    width: 6,
-                                    height: 6,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: isGuest ? Colors.orangeAccent : Colors.greenAccent,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    isGuest ? 'Sin cuenta' : 'Sincronizado ☁️',
-                                    style: TextStyle(
-                                      color: isGuest ? Colors.orangeAccent : const Color(0xFF69F0AE),
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                ],
+                              Text(
+                                isGuest ? 'Toca para iniciar sesión' : 'Cuenta sincronizada ☁️',
+                                style: TextStyle(
+                                  color: isGuest ? Colors.orangeAccent : const Color(0xFF69F0AE),
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
                             ],
                           ),
@@ -475,7 +439,7 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search, color: Colors.white),
-            tooltip: _isSearching ? 'Cerrar búsqueda' : 'Buscar canción',
+            tooltip: _isSearching ? 'Cerrar búsqueda' : 'Buscar en mis canciones',
             onPressed: () {
               setState(() {
                 _isSearching = !_isSearching;
@@ -487,13 +451,8 @@ class _HomeScreenState extends State<HomeScreen> {
             },
           ),
           IconButton(
-            icon: const Icon(Icons.speaker_group_outlined, color: Colors.greenAccent),
-            tooltip: 'Cambiar salida de audio entre dispositivos',
-            onPressed: () => showDeviceOutputSwitcherDialog(context),
-          ),
-          IconButton(
-            icon: const Icon(Icons.cloud_download_outlined, color: Colors.white),
-            tooltip: 'Descargar música',
+            icon: const Icon(Icons.download_rounded, color: Colors.cyanAccent),
+            tooltip: 'Descargar música nueva',
             onPressed: () {
               Navigator.push(
                 context,
@@ -507,37 +466,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
               return PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert, color: Colors.white),
-                tooltip: 'Opciones de la aplicación',
+                tooltip: 'Menú y Configuración',
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                color: const Color(0xFF262626),
+                color: const Color(0xFF242424),
                 onSelected: (String result) async {
-                  if (result == 'playlists') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const PlaylistsScreen()),
-                    );
+                  if (result == 'sort') {
+                    _showSortDialog(context, provider);
                   } else if (result == 'sleep_timer') {
                     _showSleepTimerDialog(context, provider);
-                  } else if (result == 'equalizer') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const EqualizerScreen()),
-                    );
-                  } else if (result == 'sort') {
-                    _showSortDialog(context, provider);
-                  } else if (result == 'suggestions') {
-                    showSuggestionDialog(context);
+                  } else if (result == 'audio_output') {
+                    showDeviceOutputSwitcherDialog(context);
                   } else if (result == 'cloud_backup') {
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (context) => const CloudBackupScreen()),
-                    );
-                  } else if (result == 'profile') {
-                    _showUserProfileDialog(context, provider);
-                  } else if (result == 'restore_hidden') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const HiddenSongsScreen()),
                     );
                   } else if (result == 'settings') {
                     Navigator.push(
@@ -548,12 +490,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 },
                 itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
                   const PopupMenuItem<String>(
-                    value: 'playlists',
+                    value: 'sort',
                     child: Row(
                       children: [
-                        Icon(Icons.queue_music, color: Colors.deepPurpleAccent, size: 20),
+                        Icon(Icons.sort_rounded, color: Colors.cyanAccent, size: 20),
                         SizedBox(width: 12),
-                        Text('Listas de reproducción', style: TextStyle(color: Colors.white, fontSize: 14)),
+                        Text('Ordenar canciones', style: TextStyle(color: Colors.white, fontSize: 14)),
                       ],
                     ),
                   ),
@@ -563,15 +505,15 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Icon(
                           Icons.bedtime_outlined,
-                          color: hasTimer ? Colors.deepPurpleAccent : Colors.white70,
+                          color: hasTimer ? Colors.amberAccent : Colors.deepPurpleAccent,
                           size: 20,
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
-                            hasTimer ? 'Temporizador (Activo)' : 'Temporizador de apagado',
+                            hasTimer ? 'Apagado automático (Activo)' : 'Apagado automático',
                             style: TextStyle(
-                              color: hasTimer ? Colors.deepPurpleAccent : Colors.white,
+                              color: hasTimer ? Colors.amberAccent : Colors.white,
                               fontWeight: hasTimer ? FontWeight.bold : FontWeight.normal,
                               fontSize: 14,
                             ),
@@ -581,43 +523,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const PopupMenuItem<String>(
-                    value: 'equalizer',
+                    value: 'audio_output',
                     child: Row(
                       children: [
-                        Icon(Icons.equalizer, color: Colors.deepPurpleAccent, size: 20),
+                        Icon(Icons.speaker_group_outlined, color: Colors.greenAccent, size: 20),
                         SizedBox(width: 12),
-                        Text('Ecualizador y Audio', style: TextStyle(color: Colors.white, fontSize: 14)),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'sort',
-                    child: Row(
-                      children: [
-                        Icon(Icons.sort, color: Colors.cyanAccent, size: 20),
-                        SizedBox(width: 12),
-                        Text('Ordenar lista...', style: TextStyle(color: Colors.white, fontSize: 14)),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'restore_hidden',
-                    child: Row(
-                      children: [
-                        Icon(Icons.visibility_off_outlined, color: Colors.amberAccent, size: 20),
-                        SizedBox(width: 12),
-                        Text('Canciones descartadas', style: TextStyle(color: Colors.white, fontSize: 14)),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuDivider(),
-                  const PopupMenuItem<String>(
-                    value: 'suggestions',
-                    child: Row(
-                      children: [
-                        Icon(Icons.lightbulb_outline, color: Colors.amberAccent, size: 20),
-                        SizedBox(width: 12),
-                        Text('Buzón de sugerencias', style: TextStyle(color: Colors.white, fontSize: 14)),
+                        Text('Cambiar dispositivo de audio', style: TextStyle(color: Colors.white, fontSize: 14)),
                       ],
                     ),
                   ),
@@ -625,29 +536,23 @@ class _HomeScreenState extends State<HomeScreen> {
                     value: 'cloud_backup',
                     child: Row(
                       children: [
-                        Icon(Icons.cloud_done_outlined, color: Colors.cyanAccent, size: 20),
+                        Icon(Icons.cloud_done_outlined, color: Color(0xFFB388FF), size: 20),
                         SizedBox(width: 12),
-                        Text('Respaldo en la Nube', style: TextStyle(color: Colors.white, fontSize: 14)),
+                        Text('Mi música en la Nube', style: TextStyle(color: Colors.white, fontSize: 14)),
                       ],
                     ),
                   ),
-                  const PopupMenuItem<String>(
-                    value: 'profile',
-                    child: Row(
-                      children: [
-                        Icon(Icons.account_circle_outlined, color: Colors.orangeAccent, size: 20),
-                        SizedBox(width: 12),
-                        Text('Mi Perfil / Nube', style: TextStyle(color: Colors.white, fontSize: 14)),
-                      ],
-                    ),
-                  ),
+                  const PopupMenuDivider(),
                   const PopupMenuItem<String>(
                     value: 'settings',
                     child: Row(
                       children: [
-                        Icon(Icons.settings_outlined, color: Colors.white70, size: 20),
+                        Icon(Icons.settings_outlined, color: Colors.white, size: 20),
                         SizedBox(width: 12),
-                        Text('Configuración', style: TextStyle(color: Colors.white, fontSize: 14)),
+                        Text(
+                          'Configuración y más opciones',
+                          style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                        ),
                       ],
                     ),
                   ),
@@ -673,10 +578,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      'Toca el corazón ❤️ en cualquier canción para guardarla en tu perfil de ${audioProvider.isGuest ? "usuario" : audioProvider.currentUsername}.',
+                    const Text(
+                      'Toca el corazón ❤️ en cualquier canción para guardarla aquí.',
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 14),
+                      style: TextStyle(color: Color(0xFFCCCCCC), fontSize: 14),
                     ),
                     const SizedBox(height: 20),
                     ElevatedButton.icon(
@@ -686,7 +591,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                       ),
                       icon: const Icon(Icons.music_note),
-                      label: const Text('Ver todas las canciones'),
+                      label: const Text('Ver todas mis canciones'),
                       onPressed: () => audioProvider.setShowOnlyFavorites(false),
                     ),
                   ],
@@ -781,7 +686,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     const Icon(Icons.music_off, size: 80, color: Colors.white30),
                     const SizedBox(height: 16),
                     const Text(
-                      '¿No encuentras lo que buscas?',
+                      'Aún no tienes canciones aquí',
                       style: TextStyle(color: Color(0xFFE0E0E0), fontSize: 18, fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 16),
@@ -799,7 +704,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         );
                       },
                       icon: const Icon(Icons.download),
-                      label: const Text('Descargar canciones gratis'),
+                      label: const Text('Buscar y descargar canciones'),
                     ),
                   ],
                 ),
@@ -809,6 +714,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
           return Column(
             children: [
+              // Barra simplificada: Filtros a la izquierda + Botón de Modo de Reproducción a la derecha
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
                 child: Row(
@@ -819,7 +725,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Row(
                           children: [
                             FilterChip(
-                              selected: !audioProvider.showOnlyFavorites && !audioProvider.isDiscoveryMode,
+                              selected: !audioProvider.showOnlyFavorites,
                               label: Text('Todas (${audioProvider.totalSongsCount})'),
                               labelStyle: TextStyle(
                                 color: !audioProvider.showOnlyFavorites ? Colors.white : Colors.white70,
@@ -833,34 +739,11 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             const SizedBox(width: 8),
                             FilterChip(
-                              selected: audioProvider.isDiscoveryMode,
-                              avatar: Icon(
-                                Icons.auto_awesome,
-                                color: audioProvider.isDiscoveryMode ? Colors.black : Colors.amberAccent,
-                                size: 16,
-                              ),
-                              label: Text(audioProvider.isDiscoveryMode ? 'Descubriendo ✨' : 'Descubrir ✨'),
-                              labelStyle: TextStyle(
-                                color: audioProvider.isDiscoveryMode ? Colors.black : Colors.amberAccent,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                              ),
-                              selectedColor: Colors.amberAccent,
-                              checkmarkColor: Colors.black,
-                              backgroundColor: const Color(0xFF2A2416),
-                              side: BorderSide(
-                                color: Colors.amberAccent.withOpacity(0.45),
-                                width: 1,
-                              ),
-                              onSelected: (_) => audioProvider.toggleDiscoveryMode(),
-                            ),
-                            const SizedBox(width: 8),
-                            FilterChip(
                               selected: audioProvider.showOnlyFavorites,
                               avatar: Icon(
                                 Icons.favorite,
                                 color: audioProvider.showOnlyFavorites ? Colors.white : Colors.redAccent,
-                                size: 16,
+                                size: 15,
                               ),
                               label: Text('Favoritas (${audioProvider.totalFavoritesCount})'),
                               labelStyle: TextStyle(
@@ -891,25 +774,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: Icon(
-                        audioProvider.isShuffle ? Icons.shuffle_on_outlined : Icons.shuffle,
-                        color: audioProvider.isShuffle ? Theme.of(context).primaryColor : Colors.white70,
-                      ),
-                      tooltip: 'Modo aleatorio',
-                      onPressed: () {
-                        audioProvider.toggleShuffle();
-                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              audioProvider.isShuffle ? 'Modo aleatorio activado' : 'Modo aleatorio desactivado',
-                            ),
-                            duration: const Duration(seconds: 1),
-                          ),
-                        );
-                      },
-                    ),
+                    const SizedBox(width: 8),
+                    _buildPlaybackModeButton(context, audioProvider),
                   ],
                 ),
               ),
@@ -960,7 +826,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
-                                    '${missing.length} canciones en la nube sin descargar en este dispositivo',
+                                    '${missing.length} canciones de tu nube listas para descargar',
                                     style: const TextStyle(color: Colors.white70, fontSize: 12),
                                   ),
                                 ),
@@ -993,144 +859,157 @@ class _HomeScreenState extends State<HomeScreen> {
                     );
                   },
                 ),
-              if (audioProvider.isDiscoveryMode)
+              // Tarjeta de Modo Aleatorio Inteligente (solo cuando está activo)
+              if (audioProvider.isSmartShuffle)
                 Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  padding: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: [
-                        Colors.amber.withOpacity(0.18),
-                        Colors.deepPurpleAccent.withOpacity(0.22),
+                        Colors.amber.withOpacity(0.16),
+                        Colors.deepPurpleAccent.withOpacity(0.20),
                       ],
                     ),
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: Colors.amberAccent.withOpacity(0.45)),
                   ),
                   child: audioProvider.isLoadingDiscovery
                       ? Row(
                           children: [
                             const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.amberAccent),
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amberAccent),
                             ),
-                            const SizedBox(width: 12),
+                            const SizedBox(width: 10),
                             Expanded(
                               child: Text(
                                 audioProvider.discoveryStatusText.isNotEmpty
                                     ? audioProvider.discoveryStatusText
-                                    : 'Buscando música nueva recomendada para ti...',
-                                style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600),
+                                    : 'Buscando canción nueva similar a tu lista...',
+                                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
                               ),
-                            ),
-                            TextButton(
-                              onPressed: () => audioProvider.stopDiscoveryMode(),
-                              child: const Text('Cancelar', style: TextStyle(color: Colors.white70, fontSize: 12)),
                             ),
                           ],
                         )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
+                      : audioProvider.isPlayingDiscoverySong && audioProvider.currentDiscoverySong != null
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Icon(Icons.auto_awesome, color: Colors.amberAccent, size: 16),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    'MODO DESCUBRIMIENTO • ${audioProvider.currentDiscoverySeedInfo}',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.amberAccent,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.bold,
+                                Row(
+                                  children: [
+                                    const Icon(Icons.auto_awesome, color: Colors.amberAccent, size: 15),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        '✨ RECOMENDACIÓN INTELIGENTE • ${audioProvider.currentDiscoverySeedInfo}',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.amberAccent,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
                                     ),
-                                  ),
+                                  ],
                                 ),
-                                InkWell(
-                                  onTap: () => audioProvider.stopDiscoveryMode(),
-                                  child: const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 4),
-                                    child: Text(
-                                      'Salir',
-                                      style: TextStyle(color: Colors.white60, fontSize: 11.5),
-                                    ),
-                                  ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '${audioProvider.currentDiscoverySong!.title} — ${audioProvider.currentDiscoverySong!.artist ?? ""}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
                                 ),
-                              ],
-                            ),
-                            if (audioProvider.currentDiscoverySong != null) ...[
-                              const SizedBox(height: 6),
-                              Text(
-                                '${audioProvider.currentDiscoverySong!.title} — ${audioProvider.currentDiscoverySong!.artist ?? ""}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.bold),
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: ElevatedButton.icon(
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: audioProvider.isCurrentDiscoverySaved
-                                            ? Colors.green.shade700
-                                            : Colors.pinkAccent,
-                                        foregroundColor: Colors.white,
-                                        padding: const EdgeInsets.symmetric(vertical: 8),
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: ElevatedButton.icon(
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: audioProvider.isCurrentDiscoverySaved
+                                              ? Colors.green.shade700
+                                              : Colors.pinkAccent,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(vertical: 6),
+                                          minimumSize: Size.zero,
+                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                        icon: Icon(
+                                          audioProvider.isCurrentDiscoverySaved ? Icons.check_circle : Icons.favorite,
+                                          size: 15,
+                                        ),
+                                        label: Text(
+                                          audioProvider.isCurrentDiscoverySaved
+                                              ? 'Guardada en tu lista'
+                                              : 'Guardar en mi lista',
+                                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                                        ),
+                                        onPressed: audioProvider.isCurrentDiscoverySaved
+                                            ? null
+                                            : () async {
+                                                final ok = await audioProvider.likeCurrentDiscoverySong();
+                                                if (ok && context.mounted) {
+                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                    const SnackBar(
+                                                      backgroundColor: Colors.green,
+                                                      content: Text('✅ Canción guardada en tu Lista de Canciones'),
+                                                    ),
+                                                  );
+                                                }
+                                              },
                                       ),
-                                      icon: Icon(
-                                        audioProvider.isCurrentDiscoverySaved ? Icons.check_circle : Icons.favorite,
-                                        size: 16,
-                                      ),
-                                      label: Text(
-                                        audioProvider.isCurrentDiscoverySaved
-                                            ? '¡Guardada en tu lista!'
-                                            : 'Me gusta (Guardar)',
-                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                                      ),
-                                      onPressed: audioProvider.isCurrentDiscoverySaved
-                                          ? null
-                                          : () async {
-                                              final ok = await audioProvider.likeCurrentDiscoverySong();
-                                              if (ok && context.mounted) {
-                                                ScaffoldMessenger.of(context).showSnackBar(
-                                                  const SnackBar(
-                                                    backgroundColor: Colors.green,
-                                                    content: Text('✅ Canción guardada permanentemente en tu Lista de Canciones'),
-                                                  ),
-                                                );
-                                              }
-                                            },
                                     ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: OutlinedButton.icon(
+                                    const SizedBox(width: 8),
+                                    OutlinedButton.icon(
                                       style: OutlinedButton.styleFrom(
                                         foregroundColor: Colors.white,
                                         side: const BorderSide(color: Colors.white38),
-                                        padding: const EdgeInsets.symmetric(vertical: 8),
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                        minimumSize: Size.zero,
+                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                                       ),
-                                      icon: const Icon(Icons.close, color: Colors.redAccent, size: 16),
-                                      label: const Text(
-                                        '✕ Quitar (No mostrar)',
-                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                                      ),
-                                      onPressed: () async {
-                                        await audioProvider.dislikeCurrentDiscoverySong();
-                                      },
+                                      icon: const Icon(Icons.skip_next, color: Colors.amberAccent, size: 16),
+                                      label: const Text('Otra nueva', style: TextStyle(fontSize: 11.5)),
+                                      onPressed: () => audioProvider.playNextDiscoverySong(),
                                     ),
+                                    const SizedBox(width: 6),
+                                    IconButton(
+                                      constraints: const BoxConstraints(),
+                                      padding: const EdgeInsets.all(4),
+                                      tooltip: 'No me gusta esta sugerencia',
+                                      icon: const Icon(Icons.close, color: Colors.redAccent, size: 18),
+                                      onPressed: () => audioProvider.dislikeCurrentDiscoverySong(),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            )
+                          : Row(
+                              children: [
+                                const Icon(Icons.auto_awesome, color: Colors.amberAccent, size: 16),
+                                const SizedBox(width: 8),
+                                const Expanded(
+                                  child: Text(
+                                    'Aleatorio Inteligente: Mezclando tu música con canciones nuevas similares',
+                                    style: TextStyle(color: Colors.white70, fontSize: 11.5),
                                   ),
-                                ],
-                              ),
-                            ],
-                          ],
-                        ),
+                                ),
+                                TextButton(
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: Colors.amberAccent,
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  onPressed: () => audioProvider.playNextDiscoverySong(),
+                                  child: const Text('Descubrir ahora ✨', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+                                ),
+                              ],
+                            ),
                 ),
               Expanded(
                 child: RefreshIndicator(
@@ -1149,7 +1028,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         song: song,
                         index: index,
                         onTap: () {
-                          // Si ya se está reproduciendo, expandir el reproductor en lugar de reiniciar/pausar
                           if (audioProvider.currentSong?.id == song.id) {
                             Navigator.push(
                               context,
@@ -1189,6 +1067,7 @@ class MiniPlayer extends StatelessWidget {
         }
 
         final song = audioProvider.currentSong!;
+        final isDiscovery = audioProvider.isPlayingDiscoverySong;
 
         return GestureDetector(
           onTap: () {
@@ -1198,11 +1077,14 @@ class MiniPlayer extends StatelessWidget {
             );
           },
           child: Container(
-            height: 70,
+            height: 68,
             margin: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: const Color(0xFF2C2C2C),
-              borderRadius: BorderRadius.circular(35),
+              color: const Color(0xFF262626),
+              borderRadius: BorderRadius.circular(34),
+              border: isDiscovery
+                  ? Border.all(color: Colors.amberAccent.withOpacity(0.5), width: 1)
+                  : null,
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withOpacity(0.5),
@@ -1213,13 +1095,18 @@ class MiniPlayer extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Hero(
                   tag: 'artwork_${song.id}',
-                  child: const CircleAvatar(
-                    radius: 25,
-                    backgroundColor: Colors.white10,
-                    child: Icon(Icons.music_note, color: Colors.deepPurpleAccent),
+                  child: CircleAvatar(
+                    radius: 23,
+                    backgroundColor: isDiscovery
+                        ? Colors.amberAccent.withOpacity(0.18)
+                        : Colors.white10,
+                    child: Icon(
+                      isDiscovery ? Icons.auto_awesome : Icons.music_note,
+                      color: isDiscovery ? Colors.amberAccent : Colors.deepPurpleAccent,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1239,32 +1126,37 @@ class MiniPlayer extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 2),
-                      Row(
-                        children: [
-                          Icon(audioProvider.currentDeviceIcon, size: 11, color: Colors.greenAccent),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              '${song.artist ?? "Desconocido"} • ${audioProvider.currentDeviceName}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Color(0xFFCCCCCC),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ],
+                      Text(
+                        isDiscovery
+                            ? '✨ ${song.artist ?? "Recomendación"} • ${audioProvider.currentDiscoverySeedInfo}'
+                            : (song.artist ?? 'Artista desconocido'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: isDiscovery ? Colors.amberAccent : const Color(0xFFCCCCCC),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                     ],
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Cambiar salida de audio',
-                  icon: const Icon(Icons.speaker_group_outlined, color: Colors.greenAccent, size: 22),
-                  onPressed: () => showDeviceOutputSwitcherDialog(context),
-                ),
+                if (isDiscovery && !audioProvider.isCurrentDiscoverySaved)
+                  IconButton(
+                    tooltip: 'Guardar en mi lista',
+                    icon: const Icon(Icons.favorite_border, color: Colors.pinkAccent, size: 24),
+                    onPressed: () async {
+                      final ok = await audioProvider.likeCurrentDiscoverySong();
+                      if (ok && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            backgroundColor: Colors.green,
+                            content: Text('✅ Canción guardada en tu Lista de Canciones'),
+                          ),
+                        );
+                      }
+                    },
+                  ),
                 IconButton(
                   icon: Icon(
                     audioProvider.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
@@ -1274,10 +1166,10 @@ class MiniPlayer extends StatelessWidget {
                   onPressed: () => audioProvider.playPause(),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.skip_next, color: Colors.white, size: 30),
+                  icon: const Icon(Icons.skip_next, color: Colors.white, size: 28),
                   onPressed: () => audioProvider.nextSong(),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
               ],
             ),
           ),

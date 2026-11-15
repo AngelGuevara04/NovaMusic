@@ -59,6 +59,11 @@
             android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
             android:exported="false" />
 
+        <!-- Receptor de instalación automática / silenciosa de actualizaciones OTA -->
+        <receiver
+            android:name=".UpdateInstallReceiver"
+            android:exported="false" />
+
         <service android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="true"

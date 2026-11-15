@@ -340,17 +340,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 borderRadius: BorderRadius.circular(20),
                                 onTap: () {
                                   final downloader = Provider.of<DownloaderProvider>(context, listen: false);
-                                  String query = song.getMap['youtube_id']?.toString() ?? '';
-                                  if (query.isEmpty) {
-                                    query = '${song.title} ${song.artist ?? ""}';
-                                  } else if (!query.startsWith('http')) {
-                                    query = 'https://www.youtube.com/watch?v=$query';
-                                  }
-                                  downloader.startDownload(query, onSuccess: () {
-                                    provider.fetchSongs();
-                                  });
+                                  downloader.downloadCloudSong(
+                                    {
+                                      'title': song.title,
+                                      'artist': song.artist ?? '',
+                                      'youtube_id': song.getMap['youtube_id']?.toString() ?? '',
+                                    },
+                                    onSuccess: () {
+                                      provider.fetchSongs();
+                                    },
+                                  );
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text('Descargando "${song.title}" a este celular...')),
+                                    SnackBar(content: Text('Descargando "${song.title}" a este dispositivo...')),
                                   );
                                 },
                                 child: Container(
@@ -403,53 +404,94 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 // Controls
                 Consumer<AudioProvider>(
                   builder: (context, audioProvider, child) {
-                    return Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    final mode = audioProvider.playbackMode;
+                    IconData modeIcon = Icons.shuffle;
+                    Color modeColor = Colors.white70;
+                    if (mode == 'smart_shuffle') {
+                      modeIcon = Icons.auto_awesome;
+                      modeColor = Colors.amberAccent;
+                    } else if (mode == 'shuffle_local') {
+                      modeIcon = Icons.shuffle;
+                      modeColor = Theme.of(context).primaryColor;
+                    }
+
+                    return Column(
                       children: [
-                        IconButton(
-                          icon: Icon(
-                            Icons.shuffle,
-                            color: audioProvider.isShuffle ? Theme.of(context).primaryColor : Colors.white70,
-                          ),
-                          onPressed: () => audioProvider.toggleShuffle(),
-                        ),
-                        IconButton(
-                          iconSize: 40,
-                          icon: const Icon(Icons.skip_previous, color: Colors.white),
-                          onPressed: () => audioProvider.previousSong(),
-                        ),
-                        Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Theme.of(context).primaryColor,
-                            boxShadow: [
-                              BoxShadow(
-                                color: Theme.of(context).primaryColor.withOpacity(0.4),
-                                blurRadius: 15,
-                                spreadRadius: 2,
-                              ),
-                            ],
-                          ),
-                          child: IconButton(
-                            iconSize: 50,
-                            icon: Icon(
-                              audioProvider.isPlaying ? Icons.pause : Icons.play_arrow,
-                              color: Colors.white,
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            IconButton(
+                              tooltip: 'Cambiar modo: En orden / Aleatorio / Inteligente',
+                              icon: Icon(modeIcon, color: modeColor),
+                              onPressed: () async {
+                                await audioProvider.cyclePlaybackMode();
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Modo: ${audioProvider.playbackModeLabel}'),
+                                    duration: const Duration(seconds: 1),
+                                  ),
+                                );
+                              },
                             ),
-                            onPressed: () => audioProvider.playPause(),
-                          ),
+                            IconButton(
+                              iconSize: 40,
+                              icon: const Icon(Icons.skip_previous, color: Colors.white),
+                              onPressed: () => audioProvider.previousSong(),
+                            ),
+                            Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Theme.of(context).primaryColor,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Theme.of(context).primaryColor.withOpacity(0.4),
+                                    blurRadius: 15,
+                                    spreadRadius: 2,
+                                  ),
+                                ],
+                              ),
+                              child: IconButton(
+                                iconSize: 50,
+                                icon: Icon(
+                                  audioProvider.isPlaying ? Icons.pause : Icons.play_arrow,
+                                  color: Colors.white,
+                                ),
+                                onPressed: () => audioProvider.playPause(),
+                              ),
+                            ),
+                            IconButton(
+                              iconSize: 40,
+                              icon: const Icon(Icons.skip_next, color: Colors.white),
+                              onPressed: () => audioProvider.nextSong(),
+                            ),
+                            IconButton(
+                              icon: Icon(
+                                audioProvider.loopMode == LoopMode.one ? Icons.repeat_one : Icons.repeat,
+                                color: audioProvider.loopMode != LoopMode.off ? Theme.of(context).primaryColor : Colors.white70,
+                              ),
+                              onPressed: () => audioProvider.toggleRepeat(),
+                            ),
+                          ],
                         ),
-                        IconButton(
-                          iconSize: 40,
-                          icon: const Icon(Icons.skip_next, color: Colors.white),
-                          onPressed: () => audioProvider.nextSong(),
-                        ),
-                        IconButton(
-                          icon: Icon(
-                            audioProvider.loopMode == LoopMode.one ? Icons.repeat_one : Icons.repeat,
-                            color: audioProvider.loopMode != LoopMode.off ? Theme.of(context).primaryColor : Colors.white70,
+                        const SizedBox(height: 6),
+                        InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () => audioProvider.cyclePlaybackMode(),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            child: Text(
+                              'Modo: ${audioProvider.playbackModeLabel} (toca para cambiar)',
+                              style: TextStyle(
+                                color: mode == 'smart_shuffle'
+                                    ? Colors.amberAccent
+                                    : (mode == 'shuffle_local' ? const Color(0xFFB388FF) : Colors.white54),
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           ),
-                          onPressed: () => audioProvider.toggleRepeat(),
                         ),
                       ],
                     );
