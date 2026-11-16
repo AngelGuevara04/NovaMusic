@@ -9,7 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../services/youtube_audio_source.dart';
-import 'package:just_audio_background/just_audio_background.dart';
+import '../services/nova_audio_background.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:on_audio_query/on_audio_query.dart' hide PlaylistModel;
 import 'package:permission_handler/permission_handler.dart';
@@ -61,17 +61,36 @@ class AudioProvider with ChangeNotifier {
   // ---- Modo Reproducción Inteligente (Normal / Aleatorio Local / Aleatorio Inteligente ✨) ----
   String _playbackMode = 'normal'; // 'normal' | 'shuffle_local' | 'smart_shuffle'
   int _smartShuffleLocalCounter = 0;
+  int? _activeLocalSongId;
   bool _isDiscoveryMode = false;
   bool _isLoadingDiscovery = false;
+  bool _isPreloadingDiscovery = false;
   String _discoveryStatusText = '';
   SongModel? _currentDiscoverySong;
   Video? _currentDiscoveryVideo;
   String? _currentDiscoveryTempPath;
   String _currentDiscoverySeedInfo = '';
   bool _isCurrentDiscoverySaved = false;
+  SongModel? _preloadedDiscoverySong;
+  Video? _preloadedDiscoveryVideo;
+  String? _preloadedDiscoveryTempPath;
+  String _preloadedDiscoverySeedInfo = '';
   final Set<String> _sessionPlayedDiscoveryIds = {};
   bool _isAutoAdvancing = false;
   bool _autoDeleteFromDevice = false;
+
+  void _syncLockScreenControls() {
+    if (kIsWeb) return;
+    final cs = currentSong;
+    final isDisc = isPlayingDiscoverySong;
+    final isLiked = isDisc
+        ? _isCurrentDiscoverySaved
+        : (cs != null && _favoriteSongIds.contains(cs.id));
+    JustAudioBackground.updateLockScreenControls(
+      isLiked: isLiked,
+      isDiscovery: isDisc,
+    );
+  }
 
   String get playbackMode => _playbackMode;
   bool get isSmartShuffle => _playbackMode == 'smart_shuffle';
@@ -312,6 +331,7 @@ class AudioProvider with ChangeNotifier {
       _favoriteSongIds.add(song.id);
     }
     _needsPlaylistRebuild = true;
+    _syncLockScreenControls();
     notifyListeners();
     await _saveFavoriteSongs();
   }
@@ -1372,6 +1392,28 @@ class AudioProvider with ChangeNotifier {
     await _setupAudioSession();
     await _initDeviceId();
 
+    // Conectar botones físicos de audífonos y controles de pantalla de bloqueo (MediaSession: Siguiente, Anterior, ❤️ Me gusta y ✕ Quitar)
+    JustAudioBackground.onSkipToNext = () async {
+      await nextSong();
+    };
+    JustAudioBackground.onSkipToPrevious = () async {
+      await previousSong();
+    };
+    JustAudioBackground.onToggleLike = () async {
+      if (isPlayingDiscoverySong) {
+        await likeCurrentDiscoverySong();
+      } else if (currentSong != null) {
+        await toggleFavorite(currentSong!);
+      }
+    };
+    JustAudioBackground.onDislikeDiscovery = () async {
+      if (isPlayingDiscoverySong) {
+        await dislikeCurrentDiscoverySong();
+      } else {
+        await nextSong();
+      }
+    };
+
     // Conectar botones interactivos de la notificación de Modo Descubrimiento (❤️ Me gusta / ✕ Quitar)
     await DownloaderProvider.initNotificationsStatic();
     DownloaderProvider.onDiscoveryNotificationAction = (String actionId) async {
@@ -1506,24 +1548,31 @@ class AudioProvider with ChangeNotifier {
           final tag = (_playlist!.children[index] as UriAudioSource).tag as MediaItem;
           final matchedIdx = songs.indexWhere((s) => s.id.toString() == tag.id);
           if (matchedIdx != -1) {
-            final changed = _currentIndex != matchedIdx || _currentPlayingSong?.id != songs[matchedIdx].id;
-            _currentIndex = matchedIdx;
-            _currentPlayingSong = songs[matchedIdx];
+            final matchedSong = songs[matchedIdx];
+            final changed = _currentIndex != matchedIdx || _currentPlayingSong?.id != matchedSong.id;
             if (changed) {
-              if (_playbackMode == 'smart_shuffle' && !_isAutoAdvancing) {
-                _smartShuffleLocalCounter++;
-                if (_smartShuffleLocalCounter >= 2) {
-                  _smartShuffleLocalCounter = 0;
-                  _isAutoAdvancing = true;
-                  Future.microtask(() async {
-                    try {
-                      await playNextDiscoverySong();
-                    } finally {
-                      _isAutoAdvancing = false;
-                    }
-                  });
-                  return;
-                }
+              // En Modo Inteligente: 1 Canción Local -> 1 Recomendación (pre-cargada sin silencios)
+              if (_playbackMode == 'smart_shuffle' &&
+                  !_isAutoAdvancing &&
+                  _activeLocalSongId != null &&
+                  matchedSong.id != _activeLocalSongId) {
+                _activeLocalSongId = null;
+                _isAutoAdvancing = true;
+                Future.microtask(() async {
+                  try {
+                    await playNextDiscoverySong();
+                  } finally {
+                    _isAutoAdvancing = false;
+                  }
+                });
+                return;
+              }
+              _currentIndex = matchedIdx;
+              _currentPlayingSong = matchedSong;
+              _activeLocalSongId = matchedSong.id;
+              _syncLockScreenControls();
+              if (_playbackMode == 'smart_shuffle') {
+                unawaited(_preloadNextDiscoveryInBackground());
               }
               notifyListeners();
               if (_isPlaying) {
@@ -1537,6 +1586,8 @@ class AudioProvider with ChangeNotifier {
         if (index != _currentIndex && index < songs.length) {
           _currentIndex = index;
           _currentPlayingSong = songs[index];
+          _activeLocalSongId = songs[index].id;
+          _syncLockScreenControls();
           notifyListeners();
           if (_isPlaying) {
             updateActiveDeviceInCloud();
@@ -2305,6 +2356,14 @@ class AudioProvider with ChangeNotifier {
     final targetSong = currentList[index];
     _currentPlayingSong = targetSong;
     _currentIndex = index;
+    _activeLocalSongId = targetSong.id;
+    _syncLockScreenControls();
+
+    // Si estamos en Modo Inteligente ✨, pre-descargar desde ahora la siguiente recomendación
+    // mientras suena esta canción local para que al cambiar no exista ningún silencio
+    if (_playbackMode == 'smart_shuffle') {
+      unawaited(_preloadNextDiscoveryInBackground());
+    }
 
     if (kIsWeb || isCloudSong(targetSong)) {
       await _playCloudSong(targetSong, index, initialPosition: initialPosition);
@@ -2323,6 +2382,8 @@ class AudioProvider with ChangeNotifier {
     
     _currentIndex = index;
     _currentPlayingSong = targetSong;
+    _activeLocalSongId = targetSong.id;
+    _syncLockScreenControls();
     try {
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
         final session = await AudioSession.instance;
@@ -2393,22 +2454,16 @@ class AudioProvider with ChangeNotifier {
     }
 
     if (_playbackMode == 'smart_shuffle') {
-      // En Modo Aleatorio Inteligente (tipo Spotify Smart Shuffle):
-      // Intercala canciones de tu lista en modo aleatorio con canciones nuevas recomendadas (cada 2 canciones locales)
+      // En Modo Aleatorio Inteligente (1 Canción Local <-> 1 Recomendación pre-cargada sin silencios):
       if (isPlayingDiscoverySong && currentList.isNotEmpty) {
-        _smartShuffleLocalCounter = 1;
+        _smartShuffleLocalCounter = 0;
         final nextIdx = Random().nextInt(currentList.length);
         await playSong(nextIdx, forceLocal: true);
         return;
       }
-      _smartShuffleLocalCounter++;
-      if (currentList.isEmpty || _smartShuffleLocalCounter >= 2) {
-        _smartShuffleLocalCounter = 0;
-        await playNextDiscoverySong();
-        return;
-      }
-      final nextIdx = Random().nextInt(currentList.length);
-      await playSong(nextIdx, forceLocal: true);
+      // Si estaba sonando una canción local (o no hay locales), pasar inmediatamente a la recomendación pre-cargada
+      _smartShuffleLocalCounter = 0;
+      await playNextDiscoverySong();
       return;
     }
 
@@ -2560,330 +2615,395 @@ class AudioProvider with ChangeNotifier {
     return false;
   }
 
+  /// Pre-busca y pre-descarga en segundo plano la siguiente recomendación mientras suena una canción local
+  /// para que al pasar a la recomendación (1 Local <-> 1 Recomendación) el cambio sea instantáneo y sin silencios.
+  Future<void> _preloadNextDiscoveryInBackground() async {
+    if (_playbackMode != 'smart_shuffle') return;
+    if (_isPreloadingDiscovery || _preloadedDiscoverySong != null) return;
+
+    _isPreloadingDiscovery = true;
+    try {
+      final prepared = await _prepareDiscoveryCandidate(isBackgroundPreload: true);
+      if (prepared != null && _playbackMode == 'smart_shuffle') {
+        _preloadedDiscoverySong = prepared['song'] as SongModel;
+        _preloadedDiscoveryVideo = prepared['video'] as Video;
+        _preloadedDiscoveryTempPath = prepared['tempPath'] as String?;
+        _preloadedDiscoverySeedInfo = prepared['seedInfo'] as String;
+      }
+    } catch (e) {
+      print('Background discovery preload skipped: $e');
+    } finally {
+      _isPreloadingDiscovery = false;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _prepareDiscoveryCandidate({required bool isBackgroundPreload}) async {
+    final rand = Random();
+    final sourcePool = <SongModel>[
+      ..._visibleSongs,
+      ...favoriteSongs,
+    ];
+
+    String targetArtist = '';
+    String seedLabel = 'Tu biblioteca';
+    String seedSongNorm = '';
+
+    if (sourcePool.isNotEmpty) {
+      final seedSong = sourcePool[rand.nextInt(sourcePool.length)];
+      seedSongNorm = normalizeForDedup(seedSong.title);
+      final rawArtist = seedSong.artist?.trim() ?? '';
+
+      if (!_isGenericArtistName(rawArtist)) {
+        targetArtist = rawArtist;
+        seedLabel = rawArtist;
+      } else if (seedSong.title.contains(' - ')) {
+        final parts = seedSong.title.split(' - ');
+        if (parts.first.trim().length >= 2) {
+          targetArtist = parts.first.trim();
+          seedLabel = targetArtist;
+        }
+      }
+
+      if (targetArtist.isEmpty) {
+        seedLabel = seedSong.title.trim();
+        if (!isBackgroundPreload) {
+          _discoveryStatusText = 'Identificando estilo de "$seedLabel"...';
+          notifyListeners();
+        }
+        try {
+          final probe = await _ytCloud.search
+              .search('${seedSong.title} official audio')
+              .timeout(const Duration(seconds: 8));
+          if (probe.isNotEmpty) {
+            targetArtist = probe.first.author
+                .replaceAll(RegExp(r'-\s*Topic', caseSensitive: false), '')
+                .replaceAll('VEVO', '')
+                .replaceAll('Official', '')
+                .trim();
+            if (targetArtist.isNotEmpty) {
+              seedLabel = '$targetArtist (${seedSong.title})';
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    final List<String> queries = [];
+    String strategyReason = 'Recomendada para ti';
+
+    if (targetArtist.isNotEmpty) {
+      final strategy = rand.nextInt(3);
+      if (strategy == 0) {
+        strategyReason = 'Más de $targetArtist';
+        queries.addAll([
+          '$targetArtist mejores canciones official audio',
+          '$targetArtist exitos official audio',
+          '$targetArtist official audio',
+        ]);
+      } else if (strategy == 1) {
+        strategyReason = 'Artistas similares a $targetArtist';
+        queries.addAll([
+          '$targetArtist feat official audio',
+          'artistas similares a $targetArtist official audio',
+          'mix $targetArtist y similares official audio',
+          '$targetArtist exitos official audio',
+        ]);
+      } else {
+        strategyReason = 'Mismo género • Estilo $seedLabel';
+        queries.addAll([
+          'canciones estilo $targetArtist official audio',
+          'mix genero $targetArtist official audio',
+          '$targetArtist radio mix official audio',
+          '$targetArtist canciones official audio',
+        ]);
+      }
+    } else if (seedLabel != 'Tu biblioteca') {
+      strategyReason = 'Similar a "$seedLabel"';
+      queries.add('$seedLabel mix official audio');
+    } else {
+      strategyReason = 'Descubrimiento musical';
+      queries.add('exitos musica popular official audio');
+    }
+
+    if (!isBackgroundPreload) {
+      _discoveryStatusText = 'Buscando: $strategyReason...';
+      notifyListeners();
+    }
+
+    Video? chosenVideo;
+    for (final q in queries) {
+      try {
+        final results = await _ytCloud.search.search(q).timeout(const Duration(seconds: 10));
+        final candidates = results.where((v) {
+          if (DownloaderProvider.isLiveOrLowQuality(v)) return false;
+          final dur = v.duration;
+          if (dur != null && (dur.inSeconds < 65 || dur.inMinutes > 9)) return false;
+          if (seedSongNorm.isNotEmpty && normalizeForDedup(v.title) == seedSongNorm) return false;
+          if (_isSongAlreadyInLibraryOrDisliked(v)) return false;
+          return true;
+        }).toList();
+
+        if (candidates.isNotEmpty) {
+          candidates.sort((a, b) =>
+              DownloaderProvider.getAudioQualityScore(b).compareTo(DownloaderProvider.getAudioQualityScore(a)));
+          final topCount = min(3, candidates.length);
+          chosenVideo = candidates[rand.nextInt(topCount)];
+          break;
+        }
+      } catch (_) {}
+    }
+
+    if (chosenVideo == null) return null;
+
+    _sessionPlayedDiscoveryIds.add(chosenVideo.id.value);
+
+    final cleanAuthor = chosenVideo.author
+        .replaceAll(RegExp(r'-\s*Topic', caseSensitive: false), '')
+        .replaceAll('VEVO', '')
+        .trim();
+    final cleanTitle = chosenVideo.title
+        .replaceAll(RegExp(r'\[.*?\]|\(.*?\)'), '')
+        .replaceAll(RegExp(r'official\s*audio|audio\s*oficial|video\s*oficial|official\s*video|lyrics|letra', caseSensitive: false), '')
+        .trim();
+    final displayTitle = cleanTitle.isNotEmpty ? cleanTitle : chosenVideo.title.trim();
+    final displayArtist = cleanAuthor.isNotEmpty ? cleanAuthor : chosenVideo.author.trim();
+    final vidId = chosenVideo.id.value;
+
+    if (!kIsWeb && Platform.isAndroid) {
+      if (!isBackgroundPreload) {
+        _discoveryStatusText = 'Preparando "$displayTitle" (quitando silencios)...';
+        notifyListeners();
+      }
+
+      final tempDir = await getTemporaryDirectory();
+      final prefix = isBackgroundPreload ? 'disc_preload' : 'disc';
+      final rawFile = File('${tempDir.path}/${prefix}_raw_$vidId.mp4');
+      final thumbFile = File('${tempDir.path}/${prefix}_thumb_$vidId.jpg');
+      final readyMp3 = File('${tempDir.path}/${prefix}_ready_$vidId.mp3');
+
+      if (await rawFile.exists()) await rawFile.delete();
+      if (await readyMp3.exists()) await readyMp3.delete();
+
+      StreamManifest manifest;
+      try {
+        manifest = await _ytCloud.videos.streamsClient
+            .getManifest(vidId, requireWatchPage: false)
+            .timeout(const Duration(seconds: 12));
+      } catch (_) {
+        manifest = await _ytCloud.videos.streamsClient
+            .getManifest(vidId)
+            .timeout(const Duration(seconds: 12));
+      }
+
+      StreamInfo? streamInfo;
+      if (manifest.muxed.isNotEmpty) {
+        streamInfo = manifest.muxed.withHighestBitrate();
+      } else {
+        final mp4s = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
+        if (mp4s.isNotEmpty) {
+          streamInfo = mp4s.withHighestBitrate();
+        } else if (manifest.audioOnly.isNotEmpty) {
+          streamInfo = manifest.audioOnly.withHighestBitrate();
+        }
+      }
+      if (streamInfo == null) return null;
+
+      final stream = _ytCloud.videos.streamsClient.get(streamInfo);
+      final sink = rawFile.openWrite();
+      try {
+        await for (final chunk in stream.timeout(const Duration(seconds: 25))) {
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.close();
+      }
+
+      bool hasThumb = false;
+      try {
+        final thumbUrl = chosenVideo.thumbnails.maxResUrl.isNotEmpty
+            ? chosenVideo.thumbnails.maxResUrl
+            : chosenVideo.thumbnails.highResUrl;
+        final tRes = await http.get(Uri.parse(thumbUrl)).timeout(const Duration(seconds: 4));
+        if (tRes.statusCode == 200) {
+          await thumbFile.writeAsBytes(tRes.bodyBytes);
+          hasThumb = true;
+        }
+      } catch (_) {}
+
+      final safeMetaTitle = displayTitle.replaceAll('"', '');
+      final safeMetaArtist = displayArtist.replaceAll('"', '');
+      const afFilter = DownloaderProvider.studioMasterAndTrimSilenceFilter;
+      final metadata = '-metadata title="$safeMetaTitle" -metadata artist="$safeMetaArtist"';
+      const codecFlags = '-ar 44100 -ac 2 -b:a 320k';
+
+      String cmd;
+      if (hasThumb) {
+        cmd = '-y -i "${rawFile.path}" -i "${thumbFile.path}" -map 0:a -map 1:v $afFilter $codecFlags -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${readyMp3.path}"';
+      } else {
+        cmd = '-y -i "${rawFile.path}" -vn $afFilter $codecFlags $metadata "${readyMp3.path}"';
+      }
+
+      var session = await FFmpegKit.execute(cmd);
+      var rc = await session.getReturnCode();
+      if (!ReturnCode.isSuccess(rc)) {
+        cmd = '-y -i "${rawFile.path}" -vn $codecFlags $metadata "${readyMp3.path}"';
+        session = await FFmpegKit.execute(cmd);
+        rc = await session.getReturnCode();
+      }
+
+      if (await rawFile.exists()) await rawFile.delete();
+      if (await thumbFile.exists()) await thumbFile.delete();
+
+      if (!ReturnCode.isSuccess(rc) || !await readyMp3.exists()) {
+        return null;
+      }
+
+      final stat = await readyMp3.stat();
+      final discSong = SongModel({
+        '_id': vidId.hashCode.abs() % 2147483647,
+        'title': displayTitle,
+        'artist': displayArtist,
+        'album': strategyReason,
+        'duration': chosenVideo.duration?.inMilliseconds ?? 0,
+        '_data': readyMp3.path,
+        '_uri': readyMp3.uri.toString(),
+        '_size': stat.size,
+        'file_extension': 'mp3',
+        'is_music': true,
+        'is_discovery': true,
+        'youtube_id': vidId,
+      });
+
+      return {
+        'song': discSong,
+        'video': chosenVideo,
+        'tempPath': readyMp3.path,
+        'seedInfo': strategyReason,
+      };
+    } else {
+      final discSong = SongModel({
+        '_id': vidId.hashCode.abs() % 2147483647,
+        'title': displayTitle,
+        'artist': displayArtist,
+        'album': strategyReason,
+        'duration': chosenVideo.duration?.inMilliseconds ?? 0,
+        '_data': '',
+        'is_cloud': true,
+        'is_discovery': true,
+        'youtube_id': vidId,
+      });
+      return {
+        'song': discSong,
+        'video': chosenVideo,
+        'tempPath': null,
+        'seedInfo': strategyReason,
+      };
+    }
+  }
+
   Future<void> playNextDiscoverySong() async {
     if (_isLoadingDiscovery) return;
 
     _isDiscoveryMode = true;
-    _isLoadingDiscovery = true;
     _isCurrentDiscoverySaved = false;
-    _discoveryStatusText = 'Analizando tu música descargada...';
-    notifyListeners();
-
     await _cleanupUnsavedDiscoveryTempFile();
-    await DownloaderProvider.showDiscoveryLoadingNotification(
-      '✨ Modo Descubrimiento',
-      'Analizando tus canciones descargadas para recomendarte música nueva...',
-    );
 
     try {
-      final rand = Random();
-      final sourcePool = <SongModel>[
-        ..._visibleSongs,
-        // Dar doble peso a las canciones favoritas del usuario
-        ...favoriteSongs,
-      ];
-
-      String targetArtist = '';
-      String seedLabel = 'Tu biblioteca';
-      String seedSongNorm = '';
-
-      if (sourcePool.isNotEmpty) {
-        final seedSong = sourcePool[rand.nextInt(sourcePool.length)];
-        seedSongNorm = normalizeForDedup(seedSong.title);
-        final rawArtist = seedSong.artist?.trim() ?? '';
-
-        if (!_isGenericArtistName(rawArtist)) {
-          targetArtist = rawArtist;
-          seedLabel = rawArtist;
-        } else if (seedSong.title.contains(' - ')) {
-          final parts = seedSong.title.split(' - ');
-          if (parts.first.trim().length >= 2) {
-            targetArtist = parts.first.trim();
-            seedLabel = targetArtist;
-          }
-        }
-
-        // Si el archivo solo tiene el nombre de la canción sin artista, descubrir su autor en YouTube
-        if (targetArtist.isEmpty) {
-          seedLabel = seedSong.title.trim();
-          _discoveryStatusText = 'Identificando estilo de "$seedLabel"...';
-          notifyListeners();
-          try {
-            final probe = await _ytCloud.search
-                .search('${seedSong.title} official audio')
-                .timeout(const Duration(seconds: 8));
-            if (probe.isNotEmpty) {
-              targetArtist = probe.first.author
-                  .replaceAll(RegExp(r'-\s*Topic', caseSensitive: false), '')
-                  .replaceAll('VEVO', '')
-                  .replaceAll('Official', '')
-                  .trim();
-              if (targetArtist.isNotEmpty) {
-                seedLabel = '$targetArtist (${seedSong.title})';
-              }
-            }
-          } catch (_) {}
-        }
+      // Si ya se estaba pre-cargando una recomendación en segundo plano, esperar unos instantes a que termine
+      int waitAttempts = 0;
+      while (_isPreloadingDiscovery && _preloadedDiscoverySong == null && waitAttempts < 30) {
+        _isLoadingDiscovery = true;
+        _discoveryStatusText = 'Terminando de preparar recomendación...';
+        notifyListeners();
+        await Future.delayed(const Duration(milliseconds: 250));
+        waitAttempts++;
       }
 
-      // Construir consultas inteligentes (tipo Spotify Smart Shuffle) basadas en tu lista:
-      // 1) Mismo artista, 2) Artista similar / colaboración, o 3) Mismo género / estilo musical
-      final List<String> queries = [];
-      String strategyReason = 'Recomendada para ti';
-
-      if (targetArtist.isNotEmpty) {
-        final strategy = rand.nextInt(3); // 0: mismo artista, 1: artista similar/colaboración, 2: mismo género/estilo
-        if (strategy == 0) {
-          strategyReason = 'Más de $targetArtist';
-          queries.addAll([
-            '$targetArtist mejores canciones official audio',
-            '$targetArtist exitos official audio',
-            '$targetArtist official audio',
-          ]);
-        } else if (strategy == 1) {
-          strategyReason = 'Artistas similares a $targetArtist';
-          queries.addAll([
-            '$targetArtist feat official audio',
-            'artistas similares a $targetArtist official audio',
-            'mix $targetArtist y similares official audio',
-            '$targetArtist exitos official audio',
-          ]);
-        } else {
-          strategyReason = 'Mismo género • Estilo $seedLabel';
-          queries.addAll([
-            'canciones estilo $targetArtist official audio',
-            'mix genero $targetArtist official audio',
-            '$targetArtist radio mix official audio',
-            '$targetArtist canciones official audio',
-          ]);
+      Map<String, dynamic>? bundle;
+      if (_preloadedDiscoverySong != null && _preloadedDiscoveryVideo != null) {
+        final prePath = _preloadedDiscoveryTempPath;
+        final isReadyOnDisk = kIsWeb || !Platform.isAndroid || (prePath != null && File(prePath).existsSync());
+        if (isReadyOnDisk) {
+          bundle = {
+            'song': _preloadedDiscoverySong!,
+            'video': _preloadedDiscoveryVideo!,
+            'tempPath': _preloadedDiscoveryTempPath,
+            'seedInfo': _preloadedDiscoverySeedInfo,
+          };
         }
-      } else if (seedLabel != 'Tu biblioteca') {
-        strategyReason = 'Similar a "$seedLabel"';
-        queries.add('$seedLabel mix official audio');
-      } else {
-        strategyReason = 'Descubrimiento musical';
-        queries.add('exitos musica popular official audio');
+        _preloadedDiscoverySong = null;
+        _preloadedDiscoveryVideo = null;
+        _preloadedDiscoveryTempPath = null;
+        _preloadedDiscoverySeedInfo = '';
       }
 
-      _discoveryStatusText = 'Buscando: $strategyReason...';
-      notifyListeners();
-
-      Video? chosenVideo;
-      for (final q in queries) {
-        try {
-          final results = await _ytCloud.search.search(q).timeout(const Duration(seconds: 10));
-          final candidates = results.where((v) {
-            if (DownloaderProvider.isLiveOrLowQuality(v)) return false;
-            final dur = v.duration;
-            if (dur != null && (dur.inSeconds < 65 || dur.inMinutes > 9)) return false;
-            if (seedSongNorm.isNotEmpty && normalizeForDedup(v.title) == seedSongNorm) return false;
-            if (_isSongAlreadyInLibraryOrDisliked(v)) return false;
-            return true;
-          }).toList();
-
-          if (candidates.isNotEmpty) {
-            candidates.sort((a, b) =>
-                DownloaderProvider.getAudioQualityScore(b).compareTo(DownloaderProvider.getAudioQualityScore(a)));
-            // Elegir entre las 3 mejores pistas de estudio para dar variedad manteniendo máxima calidad
-            final topCount = min(3, candidates.length);
-            chosenVideo = candidates[rand.nextInt(topCount)];
-            break;
-          }
-        } catch (_) {}
+      if (bundle == null) {
+        _isLoadingDiscovery = true;
+        _discoveryStatusText = 'Analizando tu música descargada...';
+        notifyListeners();
+        bundle = await _prepareDiscoveryCandidate(isBackgroundPreload: false);
       }
 
-      if (chosenVideo == null) {
+      if (bundle == null) {
         throw Exception('No se encontraron más recomendaciones nuevas en este intento.');
       }
 
-      _sessionPlayedDiscoveryIds.add(chosenVideo.id.value);
+      final discSong = bundle['song'] as SongModel;
+      final chosenVideo = bundle['video'] as Video;
+      final tempPath = bundle['tempPath'] as String?;
+      final seedInfo = bundle['seedInfo'] as String;
 
-      final cleanAuthor = chosenVideo.author
-          .replaceAll(RegExp(r'-\s*Topic', caseSensitive: false), '')
-          .replaceAll('VEVO', '')
-          .trim();
-      final cleanTitle = chosenVideo.title
-          .replaceAll(RegExp(r'\[.*?\]|\(.*?\)'), '')
-          .replaceAll(RegExp(r'official\s*audio|audio\s*oficial|video\s*oficial|official\s*video|lyrics|letra', caseSensitive: false), '')
-          .trim();
-      final displayTitle = cleanTitle.isNotEmpty ? cleanTitle : chosenVideo.title.trim();
-      final displayArtist = cleanAuthor.isNotEmpty ? cleanAuthor : chosenVideo.author.trim();
+      _currentDiscoverySeedInfo = seedInfo;
+      _currentDiscoverySong = discSong;
+      _currentDiscoveryVideo = chosenVideo;
+      _currentDiscoveryTempPath = tempPath;
+      _activeLocalSongId = null;
+      _isSingleTrackSource = true;
+      _currentPlayingSong = discSong;
+      _currentIndex = -1;
+      _isLoadingDiscovery = false;
+      _discoveryStatusText = '';
 
-      _currentDiscoverySeedInfo = strategyReason;
-
-      // En Android: descargar temporalmente y aplicar masterización + recorte de silencio inicial y final
-      if (!kIsWeb && Platform.isAndroid) {
-        _discoveryStatusText = 'Preparando "$displayTitle" (quitando silencios)...';
-        notifyListeners();
-        await DownloaderProvider.showDiscoveryLoadingNotification(
-          '✨ Preparando: $displayTitle',
-          '$displayArtist • Quitando silencios del inicio y final...',
-        );
-
-        final tempDir = await getTemporaryDirectory();
-        final vidId = chosenVideo.id.value;
-        final rawFile = File('${tempDir.path}/disc_raw_$vidId.mp4');
-        final thumbFile = File('${tempDir.path}/disc_thumb_$vidId.jpg');
-        final readyMp3 = File('${tempDir.path}/disc_ready_$vidId.mp3');
-
-        if (await rawFile.exists()) await rawFile.delete();
-        if (await readyMp3.exists()) await readyMp3.delete();
-
-        StreamManifest manifest;
-        try {
-          manifest = await _ytCloud.videos.streamsClient
-              .getManifest(vidId, requireWatchPage: false)
-              .timeout(const Duration(seconds: 12));
-        } catch (_) {
-          manifest = await _ytCloud.videos.streamsClient
-              .getManifest(vidId)
-              .timeout(const Duration(seconds: 12));
-        }
-
-        StreamInfo? streamInfo;
-        if (manifest.muxed.isNotEmpty) {
-          streamInfo = manifest.muxed.withHighestBitrate();
-        } else {
-          final mp4s = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
-          if (mp4s.isNotEmpty) {
-            streamInfo = mp4s.withHighestBitrate();
-          } else if (manifest.audioOnly.isNotEmpty) {
-            streamInfo = manifest.audioOnly.withHighestBitrate();
-          }
-        }
-        if (streamInfo == null) throw Exception('Stream no disponible para recomendación');
-
-        // Descargar stream al archivo temporal
-        final stream = _ytCloud.videos.streamsClient.get(streamInfo);
-        final sink = rawFile.openWrite();
-        try {
-          await for (final chunk in stream.timeout(const Duration(seconds: 25))) {
-            sink.add(chunk);
-          }
-        } finally {
-          await sink.close();
-        }
-
-        // Descargar carátula para incrustarla en el MP3
-        bool hasThumb = false;
-        try {
-          final thumbUrl = chosenVideo.thumbnails.maxResUrl.isNotEmpty
-              ? chosenVideo.thumbnails.maxResUrl
-              : chosenVideo.thumbnails.highResUrl;
-          final tRes = await http.get(Uri.parse(thumbUrl)).timeout(const Duration(seconds: 4));
-          if (tRes.statusCode == 200) {
-            await thumbFile.writeAsBytes(tRes.bodyBytes);
-            hasThumb = true;
-          }
-        } catch (_) {}
-
-        final safeMetaTitle = displayTitle.replaceAll('"', '');
-        final safeMetaArtist = displayArtist.replaceAll('"', '');
-        const afFilter = DownloaderProvider.studioMasterAndTrimSilenceFilter;
-        final metadata = '-metadata title="$safeMetaTitle" -metadata artist="$safeMetaArtist"';
-        const codecFlags = '-ar 44100 -ac 2 -b:a 320k';
-
-        String cmd;
-        if (hasThumb) {
-          cmd = '-y -i "${rawFile.path}" -i "${thumbFile.path}" -map 0:a -map 1:v $afFilter $codecFlags -c:v mjpeg -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" $metadata "${readyMp3.path}"';
-        } else {
-          cmd = '-y -i "${rawFile.path}" -vn $afFilter $codecFlags $metadata "${readyMp3.path}"';
-        }
-
-        var session = await FFmpegKit.execute(cmd);
-        var rc = await session.getReturnCode();
-        if (!ReturnCode.isSuccess(rc)) {
-          cmd = '-y -i "${rawFile.path}" -vn $codecFlags $metadata "${readyMp3.path}"';
-          session = await FFmpegKit.execute(cmd);
-          rc = await session.getReturnCode();
-        }
-
-        if (await rawFile.exists()) await rawFile.delete();
-        if (await thumbFile.exists()) await thumbFile.delete();
-
-        if (!ReturnCode.isSuccess(rc) || !await readyMp3.exists()) {
-          throw Exception('Error procesando audio recomendado');
-        }
-
-        _currentDiscoveryTempPath = readyMp3.path;
-        final stat = await readyMp3.stat();
-        final discSong = SongModel({
-          '_id': vidId.hashCode.abs() % 2147483647,
-          'title': displayTitle,
-          'artist': displayArtist,
-          'album': _currentDiscoverySeedInfo,
-          'duration': chosenVideo.duration?.inMilliseconds ?? 0,
-          '_data': readyMp3.path,
-          '_uri': readyMp3.uri.toString(),
-          '_size': stat.size,
-          'file_extension': 'mp3',
-          'is_music': true,
-          'is_discovery': true,
-          'youtube_id': vidId,
-        });
-
-        _isSingleTrackSource = true;
-        _currentDiscoverySong = discSong;
-        _currentDiscoveryVideo = chosenVideo;
-        _currentPlayingSong = discSong;
-        _currentIndex = -1;
-        _isLoadingDiscovery = false;
-        _discoveryStatusText = '';
-
+      if (!kIsWeb && Platform.isAndroid && tempPath != null) {
         final mediaItem = MediaItem(
           id: discSong.id.toString(),
-          title: '✨ $displayTitle',
-          artist: '$displayArtist • $_currentDiscoverySeedInfo',
-          album: 'Modo Descubrimiento (❤️ Me gusta o ✕ en notificación)',
+          title: '✨ ${discSong.title}',
+          artist: '${discSong.artist ?? "Artista"} • $_currentDiscoverySeedInfo',
+          album: 'Modo Inteligente (❤️ Me gusta o ✕ en pantalla bloqueada)',
+          rating: const Rating.newHeartRating(false),
         );
 
         await _audioPlayer.setAudioSource(
-          AudioSource.uri(Uri.file(readyMp3.path), tag: mediaItem),
+          AudioSource.uri(Uri.file(tempPath), tag: mediaItem),
         );
         final audioSession = await AudioSession.instance;
         await audioSession.setActive(true);
         _isPlaying = true;
+        _syncLockScreenControls();
         notifyListeners();
         unawaited(_audioPlayer.play());
         updateActiveDeviceInCloud();
-
-        // Mostrar notificación interactiva con botones ❤️ Me gusta (Guardar) y ✕ Quitar
-        await DownloaderProvider.showDiscoveryPlayingNotification(
-          songTitle: displayTitle,
-          artist: displayArtist,
-          seedInfo: _currentDiscoverySeedInfo,
-          isSaved: false,
-        );
       } else {
-        // En PC / Web reproducir por stream directo y mostrar controles ❤️ / ✕ en pantalla
-        final vidId = chosenVideo.id.value;
-        final discSong = SongModel({
-          '_id': vidId.hashCode.abs() % 2147483647,
-          'title': displayTitle,
-          'artist': displayArtist,
-          'album': _currentDiscoverySeedInfo,
-          'duration': chosenVideo.duration?.inMilliseconds ?? 0,
-          '_data': '',
-          'is_cloud': true,
-          'is_discovery': true,
-          'youtube_id': vidId,
-        });
-        _currentDiscoverySong = discSong;
-        _currentDiscoveryVideo = chosenVideo;
-        _isLoadingDiscovery = false;
-        _discoveryStatusText = '';
+        _syncLockScreenControls();
         notifyListeners();
         await _playCloudSong(discSong, -1, keepDiscoveryState: true);
       }
+
+      // Pre-cargar en segundo plano la siguiente recomendación por si el usuario presiona "✕ Quitar"
+      unawaited(_preloadNextDiscoveryInBackground());
     } catch (e) {
       print('Error in playNextDiscoverySong: $e');
       _isLoadingDiscovery = false;
-      _discoveryStatusText = 'Error buscando recomendación. Reintentando...';
+      _discoveryStatusText = '';
       notifyListeners();
+      // Si falló la red o búsqueda, pasar sin silencio a una canción local de la lista
+      if (songs.isNotEmpty) {
+        await playSong(Random().nextInt(songs.length), forceLocal: true);
+      }
     }
   }
 
-  /// Acción "❤️ Me gusta": Guarda permanentemente la canción recomendada en el dispositivo y en la lista de canciones
+  /// Acción "❤️ Me gusta": Guarda permanentemente la canción recomendada en el dispositivo, en la lista y en Favoritas ❤️
   Future<bool> likeCurrentDiscoverySong() async {
     final discSong = _currentDiscoverySong;
     if (discSong == null) return false;
@@ -2947,6 +3067,10 @@ class AudioProvider with ChangeNotifier {
         _visibleSongs.insert(0, savedSong);
         _applySort();
       }
+      if (!_favoriteSongIds.contains(savedSong.id)) {
+        _favoriteSongIds.add(savedSong.id);
+        unawaited(_saveFavoriteSongs());
+      }
 
       // Agregar al respaldo de la nube
       if (!_cloudLibrarySongs.any((c) => normalizeForDedup(c['title'] ?? '') == normNew)) {
@@ -2969,13 +3093,7 @@ class AudioProvider with ChangeNotifier {
 
       _isCurrentDiscoverySaved = true;
       _needsPlaylistRebuild = true;
-
-      await DownloaderProvider.showDiscoveryPlayingNotification(
-        songTitle: discSong.title,
-        artist: rawArtist,
-        seedInfo: _currentDiscoverySeedInfo,
-        isSaved: true,
-      );
+      _syncLockScreenControls();
 
       notifyListeners();
       return true;
@@ -2985,7 +3103,7 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
-  /// Acción "✕ Quitar": Descarta la canción recomendada, la bloquea permanentemente para que no vuelva a salir y pasa a la siguiente
+  /// Acción "✕ Quitar": Descarta la canción recomendada, la bloquea permanentemente para que no vuelva a salir y pasa a la siguiente sin silencios
   Future<void> dislikeCurrentDiscoverySong() async {
     final discSong = _currentDiscoverySong;
     if (discSong != null) {
@@ -3006,7 +3124,15 @@ class AudioProvider with ChangeNotifier {
 
     await _audioPlayer.stop();
     await _cleanupUnsavedDiscoveryTempFile();
-    await playNextDiscoverySong();
+
+    // Si ya hay otra recomendación pre-cargada lista, reproducirla al instante; si no, pasar a una canción local mientras se pre-carga la siguiente
+    if (_preloadedDiscoverySong != null) {
+      await playNextDiscoverySong();
+    } else if (songs.isNotEmpty) {
+      await playSong(Random().nextInt(songs.length), forceLocal: true);
+    } else {
+      await playNextDiscoverySong();
+    }
   }
 
   Future<void> seekTo(Duration position) async {
@@ -3065,11 +3191,13 @@ class AudioProvider with ChangeNotifier {
         }
       }
     } else {
-      // Si activa Aleatorio Inteligente y no hay nada reproduciéndose, comenzar de inmediato
+      // Pre-cargar desde ahora la primera recomendación en segundo plano para evitar silencios
+      unawaited(_preloadNextDiscoveryInBackground());
+      // Si activa Aleatorio Inteligente y no hay nada reproduciéndose, comenzar de inmediato con 1 canción local
       if (!_isPlaying && currentSong == null) {
         if (songs.isNotEmpty) {
-          _smartShuffleLocalCounter = 1;
-          await playSong(Random().nextInt(songs.length));
+          _smartShuffleLocalCounter = 0;
+          await playSong(Random().nextInt(songs.length), forceLocal: true);
         } else {
           await playNextDiscoverySong();
         }
