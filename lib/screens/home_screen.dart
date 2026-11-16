@@ -6,7 +6,9 @@ import '../widgets/device_output_dialog.dart';
 import '../widgets/song_artwork.dart';
 import '../widgets/queue_sheet.dart';
 import '../services/updater_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import '../providers/audio_provider.dart';
 import '../providers/downloader_provider.dart';
@@ -217,6 +219,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   Navigator.pop(ctx);
                   final prefs = await SharedPreferences.getInstance();
                   await prefs.remove('current_username');
+                  if (kIsWeb) {
+                    try {
+                      await http.get(Uri.parse('/api/session?clear=1')).timeout(const Duration(seconds: 2));
+                    } catch (_) {}
+                  }
                   if (context.mounted) {
                     Navigator.pushReplacement(
                       context,

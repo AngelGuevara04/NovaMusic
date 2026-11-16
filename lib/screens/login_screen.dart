@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
 import '../providers/audio_provider.dart';
@@ -138,6 +140,11 @@ class _LoginScreenState extends State<LoginScreen> {
       // Guardar sesión local
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('current_username', username);
+      if (kIsWeb) {
+        try {
+          await http.get(Uri.parse('/api/session?username=${Uri.encodeComponent(username)}')).timeout(const Duration(seconds: 2));
+        } catch (_) {}
+      }
 
       if (mounted) {
         final audioProvider = Provider.of<AudioProvider>(context, listen: false);

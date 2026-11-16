@@ -335,6 +335,41 @@ class NovaHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
+        if parsed.path == "/api/session":
+            params = urllib.parse.parse_qs(parsed.query)
+            data_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NovaMusic")
+            os.makedirs(data_dir, exist_ok=True)
+            session_file = os.path.join(data_dir, "session.json")
+
+            if params.get("clear", [""])[0] == "1":
+                try:
+                    if os.path.exists(session_file):
+                        os.remove(session_file)
+                except Exception:
+                    pass
+                self._send_json(200, {"ok": True, "username": ""})
+                return
+
+            new_user = params.get("username", [""])[0].strip()
+            if new_user:
+                try:
+                    with open(session_file, "w", encoding="utf-8") as sf:
+                        json.dump({"username": new_user}, sf)
+                except Exception:
+                    pass
+                self._send_json(200, {"ok": True, "username": new_user})
+                return
+
+            saved_user = ""
+            try:
+                if os.path.exists(session_file):
+                    with open(session_file, "r", encoding="utf-8") as sf:
+                        saved_user = (json.load(sf).get("username") or "").strip()
+            except Exception:
+                pass
+            self._send_json(200, {"ok": True, "username": saved_user})
+            return
+
         if parsed.path == "/api/app-update":
             params = urllib.parse.parse_qs(parsed.query)
             zip_url = params.get("url", [""])[0].strip()
@@ -584,8 +619,11 @@ class NovaHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 req = urllib.request.Request(stream_url, headers=headers)
                 with urllib.request.urlopen(req, timeout=12) as upstream:
+                    ctype = upstream.headers.get("Content-Type", "audio/mp4")
+                    if "video/mp4" in ctype:
+                        ctype = ctype.replace("video/mp4", "audio/mp4")
                     self.send_response(upstream.status)
-                    self.send_header("Content-Type", upstream.headers.get("Content-Type", "audio/mp4"))
+                    self.send_header("Content-Type", ctype)
                     self.send_header("Accept-Ranges", "bytes")
                     if upstream.headers.get("Content-Length"):
                         self.send_header("Content-Length", upstream.headers.get("Content-Length"))
@@ -635,5 +673,16 @@ if __name__ == "__main__":
         text_select=False,
     )
 
-    webview.start(gui="edgechromium", debug=False)
+    webview_storage = os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+        "NovaMusic",
+        "WebViewData",
+    )
+    os.makedirs(webview_storage, exist_ok=True)
+    webview.start(
+        gui="edgechromium",
+        debug=False,
+        private_mode=False,
+        storage_path=webview_storage,
+    )
     sys.exit(0)

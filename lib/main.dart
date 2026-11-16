@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'services/nova_audio_background.dart';
@@ -38,7 +40,25 @@ Future<void> main() async {
   }
   
   final prefs = await SharedPreferences.getInstance();
-  final initialUser = prefs.getString('current_username');
+  String? initialUser = prefs.getString('current_username');
+  if (kIsWeb) {
+    try {
+      if (initialUser == null || initialUser.isEmpty) {
+        final res = await http.get(Uri.parse('/api/session')).timeout(const Duration(seconds: 2));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body);
+          final saved = (data['username'] ?? '').toString().trim();
+          if (saved.isNotEmpty) {
+            initialUser = saved;
+            await prefs.setString('current_username', saved);
+          }
+        }
+      } else {
+        // Asegurar respaldo en disco para futuras actualizaciones de PC
+        http.get(Uri.parse('/api/session?username=${Uri.encodeComponent(initialUser)}')).ignore();
+      }
+    } catch (_) {}
+  }
 
   runApp(
     MultiProvider(
