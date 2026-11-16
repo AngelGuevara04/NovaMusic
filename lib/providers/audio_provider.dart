@@ -43,8 +43,20 @@ class AudioProvider with ChangeNotifier {
   Map<String, dynamic>? get activeCloudDevice => _activeCloudDevice;
   Map<String, dynamic>? _lastRemotePlaybackState;
   String? _lastHandledCommandId;
+  String? _remoteOutputDeviceId;
+  String? _remoteOutputDeviceName;
+  bool _isRemotePlaying = false;
+  Timer? _remoteProgressTicker;
   SongModel? _currentPlayingSong;
   bool _isSingleTrackSource = false;
+
+  bool get isControllingRemoteDevice =>
+      _remoteOutputDeviceId != null &&
+      _remoteOutputDeviceId!.isNotEmpty &&
+      _remoteOutputDeviceId != _deviceId;
+  String? get remoteOutputDeviceId => _remoteOutputDeviceId;
+  String get remoteOutputDeviceName => _remoteOutputDeviceName ?? 'Otro dispositivo';
+  bool get isLocalPlaying => _isPlaying;
 
   // ---- Modo Reproducción Inteligente (Normal / Aleatorio Local / Aleatorio Inteligente ✨) ----
   String _playbackMode = 'normal'; // 'normal' | 'shuffle_local' | 'smart_shuffle'
@@ -158,11 +170,15 @@ class AudioProvider with ChangeNotifier {
 
   bool isCloudSong(SongModel song) {
     if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
-      final norm = normalizeForDedup(song.title);
-      if (norm.isNotEmpty) {
-        if (_pcDownloadedSongKeys.contains(norm)) return false;
-        if (_pcDownloadedSongKeys.any((k) =>
-            k.length >= 6 && norm.length >= 6 && (k.contains(norm) || norm.contains(k)))) {
+      if (song.getMap['is_cloud'] == false) return false;
+      final normTitle = normalizeForDedup(song.title);
+      final normFull = normalizeForDedup('${song.artist ?? ""} ${song.title}');
+      final normRev = normalizeForDedup('${song.title} ${song.artist ?? ""}');
+      for (final cand in [normTitle, normFull, normRev]) {
+        if (cand.isEmpty) continue;
+        if (_pcDownloadedSongKeys.contains(cand)) return false;
+        if (cand.length >= 5 &&
+            _pcDownloadedSongKeys.any((k) => k.length >= 5 && (k.contains(cand) || cand.contains(k)))) {
           return false;
         }
       }
@@ -179,20 +195,31 @@ class AudioProvider with ChangeNotifier {
   }
 
   bool isCloudItemDownloadedOnDevice(Map<String, dynamic> cloudItem) {
-    final cTitle = normalizeForDedup((cloudItem['title'] ?? '').toString());
+    final rawTitle = (cloudItem['title'] ?? '').toString();
+    final rawArtist = (cloudItem['artist'] ?? '').toString();
+    final cTitle = normalizeForDedup(rawTitle);
+    final cFull = normalizeForDedup('$rawArtist $rawTitle');
+    final cRev = normalizeForDedup('$rawTitle $rawArtist');
     if (cTitle.isEmpty) return false;
 
     if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
-      if (_pcDownloadedSongKeys.contains(cTitle)) return true;
-      return _pcDownloadedSongKeys.any((k) =>
-          k.length >= 6 && cTitle.length >= 6 && (k.contains(cTitle) || cTitle.contains(k)));
+      for (final cand in [cTitle, cFull, cRev]) {
+        if (cand.isEmpty) continue;
+        if (_pcDownloadedSongKeys.contains(cand)) return true;
+        if (cand.length >= 5 &&
+            _pcDownloadedSongKeys.any((k) => k.length >= 5 && (k.contains(cand) || cand.contains(k)))) {
+          return true;
+        }
+      }
+      return false;
     }
 
     return _allSongs.any((s) {
       if (isCloudSong(s)) return false;
       final lTitle = normalizeForDedup(s.title);
-      if (lTitle == cTitle) return true;
-      if (cTitle.length >= 6 && lTitle.length >= 6) {
+      final lFull = normalizeForDedup('${s.artist ?? ""} ${s.title}');
+      if (lTitle == cTitle || lTitle == cFull || lFull == cFull || lFull == cTitle) return true;
+      if (cTitle.length >= 5 && lTitle.length >= 5) {
         if (lTitle.contains(cTitle) || cTitle.contains(lTitle)) return true;
       }
       return false;
@@ -442,14 +469,41 @@ class AudioProvider with ChangeNotifier {
 
   void _startHeartbeatTimer() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       registerDeviceInCloud();
     });
 
     _fastSyncTimer?.cancel();
-    _fastSyncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+    _fastSyncTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       _pollCloudPlaybackAndDevices();
     });
+  }
+
+  void _updateRemoteProgressTicker() {
+    _remoteProgressTicker?.cancel();
+    if (isControllingRemoteDevice && _isRemotePlaying) {
+      _remoteProgressTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!isControllingRemoteDevice || !_isRemotePlaying) {
+          _remoteProgressTicker?.cancel();
+          return;
+        }
+        final nextPos = _currentPosition + const Duration(seconds: 1);
+        if (_totalDuration > Duration.zero && nextPos > _totalDuration) {
+          _currentPosition = _totalDuration;
+        } else {
+          _currentPosition = nextPos;
+        }
+        notifyListeners();
+      });
+    }
+  }
+
+  void disconnectRemoteControl() {
+    _remoteOutputDeviceId = null;
+    _remoteOutputDeviceName = null;
+    _isRemotePlaying = false;
+    _updateRemoteProgressTicker();
+    notifyListeners();
   }
 
   Future<void> refreshConnectedDevices() async {
@@ -484,59 +538,258 @@ class AudioProvider with ChangeNotifier {
           .where((m) {
             if (m['id'] == _deviceId) return true;
             final lastSeen = DateTime.tryParse(m['last_seen']?.toString() ?? '');
-            return lastSeen == null || now.difference(lastSeen).inMinutes < 4;
+            return lastSeen == null || now.difference(lastSeen).inMinutes.abs() < 10;
           })
           .toList();
       _connectedDevices = list;
       changed = true;
     }
 
+    // 2. Sincronizar estado del dispositivo activo (para mostrar progreso y estado en el control remoto)
     if (newRec['active_device'] != null && newRec['active_device'] is Map) {
       _activeCloudDevice = Map<String, dynamic>.from(newRec['active_device'] as Map);
+      final activeDevId = _activeCloudDevice!['device_id']?.toString();
+      final activeIsPlaying = _activeCloudDevice!['is_playing'] == true;
+
+      if (activeDevId != null && activeDevId.isNotEmpty && activeDevId != _deviceId) {
+        // Si este dispositivo no está reproduciendo localmente y otro dispositivo está activo (o ya lo controlamos)
+        if (!_isPlaying && (isControllingRemoteDevice || activeIsPlaying)) {
+          _remoteOutputDeviceId = activeDevId;
+          _remoteOutputDeviceName = _activeCloudDevice!['device_name']?.toString() ?? _remoteOutputDeviceName;
+          _isRemotePlaying = activeIsPlaying;
+
+          final activeSongMap = _activeCloudDevice!['song'] is Map
+              ? Map<String, dynamic>.from(_activeCloudDevice!['song'] as Map)
+              : null;
+          final activeTitle = (_activeCloudDevice!['song_title'] ?? '').toString();
+          if (activeTitle.isNotEmpty || activeSongMap != null) {
+            final resolved = _resolveSongFromRemoteTitle(activeTitle, fallbackMap: activeSongMap);
+            if (resolved != null) {
+              _currentPlayingSong = resolved;
+              final durMs = (activeSongMap?['duration'] is num)
+                  ? (activeSongMap!['duration'] as num).toInt()
+                  : (resolved.duration ?? 0);
+              if (durMs > 0) {
+                _totalDuration = Duration(milliseconds: durMs);
+              }
+            }
+          }
+          if (_activeCloudDevice!['position_ms'] is num) {
+            final remotePosMs = (_activeCloudDevice!['position_ms'] as num).toInt();
+            if ((_currentPosition.inMilliseconds - remotePosMs).abs() > 3500 || !activeIsPlaying) {
+              _currentPosition = Duration(milliseconds: remotePosMs);
+            }
+          }
+          _updateRemoteProgressTicker();
+        }
+      }
       changed = true;
     }
 
-    // 2. Control de salida de audio remoto (tipo Spotify Connect)
+    // 3. Control de salida de audio remoto (tipo Spotify Connect: Play, Pause, Resume, Seek, Next, Prev)
     if (newRec['playback_state'] != null && newRec['playback_state'] is Map) {
       final pb = Map<String, dynamic>.from(newRec['playback_state'] as Map);
       _lastRemotePlaybackState = pb;
       final cmdId = pb['command_id']?.toString() ?? pb['updated_at']?.toString() ?? '';
-      final targetId = pb['target_device_id']?.toString();
-      final action = pb['action']?.toString();
 
       if (cmdId.isNotEmpty && cmdId != _lastHandledCommandId) {
-        // Ignorar si la orden es vieja (> 45 segundos) al abrir la app
-        final updatedAt = DateTime.tryParse(pb['updated_at']?.toString() ?? '');
-        final isRecent = updatedAt == null || DateTime.now().difference(updatedAt).inSeconds < 45;
-
-        _lastHandledCommandId = cmdId;
-
-        if (isRecent) {
-          if (targetId == _deviceId) {
-            // Este dispositivo fue elegido como salida de audio
-            if (action == 'play') {
-              final songMap = pb['song'];
-              final posMs = (pb['position_ms'] is num) ? (pb['position_ms'] as num).toInt() : 0;
-              if (songMap is Map) {
-                _playTransferredSong(Map<String, dynamic>.from(songMap), posMs);
-              }
-            } else if (action == 'pause') {
-              _audioPlayer.pause();
-            }
-          } else if (targetId != null && targetId != _deviceId) {
-            // Otro dispositivo tiene la salida activa: pausar este dispositivo inmediatamente
-            if (_isPlaying || _audioPlayer.playing) {
-              _audioPlayer.pause();
-              _isPlaying = false;
-            }
-          }
-        }
+        _executeRemotePlaybackCommand(pb);
       }
       changed = true;
     }
 
     if (changed) {
       notifyListeners();
+    }
+  }
+
+  Future<void> _executeRemotePlaybackCommand(Map<String, dynamic> pb) async {
+    final cmdId = pb['command_id']?.toString() ?? pb['updated_at']?.toString() ?? '';
+    if (cmdId.isEmpty || cmdId == _lastHandledCommandId) return;
+    _lastHandledCommandId = cmdId;
+
+    final targetId = pb['target_device_id']?.toString();
+    final action = pb['action']?.toString() ?? 'play';
+    final songMap = pb['song'] is Map ? Map<String, dynamic>.from(pb['song'] as Map) : null;
+    final posMs = (pb['position_ms'] is num) ? (pb['position_ms'] as num).toInt() : 0;
+
+    if (targetId == _deviceId) {
+      // ¡ESTE dispositivo es la salida de audio activa!
+      _remoteOutputDeviceId = null;
+      _remoteOutputDeviceName = null;
+      _isRemotePlaying = false;
+      _updateRemoteProgressTicker();
+
+      if (action == 'play') {
+        if (songMap != null) {
+          await _playTransferredSong(songMap, posMs);
+        } else if (currentSong != null && _audioPlayer.audioSource != null) {
+          _isPlaying = true;
+          notifyListeners();
+          unawaited(_audioPlayer.play());
+          await updateActiveDeviceInCloud();
+        } else if (songs.isNotEmpty) {
+          await playSong(0, forceLocal: true);
+        }
+      } else if (action == 'resume') {
+        if (currentSong != null && _audioPlayer.audioSource != null) {
+          _isPlaying = true;
+          notifyListeners();
+          unawaited(_audioPlayer.play());
+          await updateActiveDeviceInCloud();
+        } else if (songMap != null) {
+          await _playTransferredSong(songMap, posMs);
+        } else if (songs.isNotEmpty) {
+          await playSong(0, forceLocal: true);
+        }
+      } else if (action == 'pause') {
+        await _audioPlayer.pause();
+        _isPlaying = false;
+        notifyListeners();
+        await updateActiveDeviceInCloud();
+      } else if (action == 'seek') {
+        final targetPos = Duration(milliseconds: posMs);
+        try {
+          await _audioPlayer.seek(targetPos);
+        } catch (_) {}
+        _currentPosition = targetPos;
+        notifyListeners();
+        await updateActiveDeviceInCloud();
+      } else if (action == 'next') {
+        await nextSong(forceLocal: true);
+      } else if (action == 'previous') {
+        await previousSong(forceLocal: true);
+      }
+      notifyListeners();
+    } else if (targetId != null && targetId.isNotEmpty && targetId != _deviceId) {
+      // OTRO dispositivo tiene la salida activa: pausar este dispositivo inmediatamente y pasar a modo Control Remoto
+      if (_isPlaying || _audioPlayer.playing) {
+        await _audioPlayer.pause();
+        _isPlaying = false;
+      }
+      _remoteOutputDeviceId = targetId;
+      final targetDev = _connectedDevices.firstWhere(
+        (d) => d['id'] == targetId,
+        orElse: () => {},
+      );
+      if (targetDev.isNotEmpty && targetDev['name'] != null) {
+        _remoteOutputDeviceName = targetDev['name'].toString();
+      } else if (_activeCloudDevice != null && _activeCloudDevice!['device_id'] == targetId) {
+        _remoteOutputDeviceName = _activeCloudDevice!['device_name']?.toString();
+      }
+
+      if (action == 'play' || action == 'resume') {
+        _isRemotePlaying = true;
+      } else if (action == 'pause') {
+        _isRemotePlaying = false;
+      }
+
+      if (songMap != null) {
+        final resolved = _resolveSongFromRemoteTitle(
+          (songMap['title'] ?? '').toString(),
+          fallbackMap: songMap,
+        );
+        if (resolved != null) {
+          _currentPlayingSong = resolved;
+          final durMs = (songMap['duration'] is num)
+              ? (songMap['duration'] as num).toInt()
+              : (resolved.duration ?? 0);
+          if (durMs > 0) {
+            _totalDuration = Duration(milliseconds: durMs);
+          }
+        }
+      }
+      if (posMs >= 0 && (action == 'play' || action == 'seek' || action == 'pause')) {
+        _currentPosition = Duration(milliseconds: posMs);
+      }
+      _updateRemoteProgressTicker();
+      notifyListeners();
+    }
+  }
+
+  /// Envía una orden instantánea (Play, Pause, Resume, Seek, Next, Previous) al dispositivo de salida activo
+  Future<void> sendRemoteCommand({
+    required String action,
+    SongModel? song,
+    int? positionMs,
+    String? targetDeviceIdOverride,
+  }) async {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return;
+    if (_deviceId == null) await _initDeviceId();
+
+    final targetId = targetDeviceIdOverride ?? _remoteOutputDeviceId;
+    if (targetId == null || targetId.isEmpty) return;
+
+    final targetName = targetId == _deviceId
+        ? currentDeviceName
+        : (_connectedDevices.firstWhere(
+              (d) => d['id'] == targetId,
+              orElse: () => {'name': _remoteOutputDeviceName ?? 'Dispositivo Remoto'},
+            )['name'] ??
+            _remoteOutputDeviceName ??
+            'Dispositivo Remoto');
+
+    final effectiveSong = song ?? currentSong;
+    final effectivePosMs = positionMs ?? _currentPosition.inMilliseconds;
+    final commandId = 'cmd_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+    final nowIso = DateTime.now().toIso8601String();
+
+    final songPayload = effectiveSong != null
+        ? <String, dynamic>{
+            '_id': effectiveSong.id,
+            'id': effectiveSong.id,
+            'title': effectiveSong.title,
+            'artist': effectiveSong.artist ?? 'Artista desconocido',
+            'duration': effectiveSong.duration ?? _totalDuration.inMilliseconds,
+            '_data': effectiveSong.data,
+            'youtube_id': effectiveSong.getMap['youtube_id'] ?? '',
+          }
+        : null;
+
+    final newPlaybackState = <String, dynamic>{
+      'command_id': commandId,
+      'target_device_id': targetId,
+      'action': action,
+      if (songPayload != null) 'song': songPayload,
+      'position_ms': effectivePosMs,
+      'sender_device_id': _deviceId,
+      'updated_at': nowIso,
+    };
+
+    final isPlayingNow = action == 'pause' ? false : (action == 'play' || action == 'resume' ? true : _isRemotePlaying);
+    final newActiveDevice = <String, dynamic>{
+      'device_id': targetId,
+      'device_name': targetName,
+      'is_playing': isPlayingNow,
+      'song_title': effectiveSong?.title ?? (_activeCloudDevice?['song_title'] ?? ''),
+      'position_ms': effectivePosMs,
+      if (songPayload != null) 'song': songPayload,
+      'updated_at': nowIso,
+    };
+
+    _lastHandledCommandId = commandId;
+    _lastRemotePlaybackState = newPlaybackState;
+    _activeCloudDevice = newActiveDevice;
+    notifyListeners();
+
+    // 1. Enviar por WebSocket Broadcast para respuesta instantánea (<100ms)
+    try {
+      await _realtimeChannel?.sendBroadcastMessage(
+        event: 'remote_cmd',
+        payload: newPlaybackState,
+      );
+    } catch (_) {}
+
+    // 2. Persistir en Supabase para sincronización garantizada
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('user_preferences').update({
+        'playback_state': newPlaybackState,
+        'active_device': newActiveDevice,
+        'last_active': nowIso,
+      }).eq('username', _currentUsername!);
+    } catch (e) {
+      print('Error sending remote command: $e');
     }
   }
 
@@ -597,7 +850,7 @@ class AudioProvider with ChangeNotifier {
     final initialPos = posMs > 0 ? Duration(milliseconds: posMs) : Duration.zero;
 
     if (songIdx != -1) {
-      await playSong(songIdx, initialPosition: initialPos);
+      await playSong(songIdx, initialPosition: initialPos, forceLocal: true);
     } else {
       // Si la canción no está en la lista local de este dispositivo, reproducirla directamente desde la nube
       // sin insertarla en la posición 0 para no alterar los índices de la lista
@@ -621,6 +874,12 @@ class AudioProvider with ChangeNotifier {
     final supabase = Supabase.instance.client;
     _realtimeChannel = supabase
         .channel('public:user_preferences:${_currentUsername}')
+        .onBroadcast(
+          event: 'remote_cmd',
+          callback: (payload) {
+            _executeRemotePlaybackCommand(Map<String, dynamic>.from(payload));
+          },
+        )
         .onPostgresChanges(
           event: PostgresChangeEvent.update,
           schema: 'public',
@@ -826,7 +1085,17 @@ class AudioProvider with ChangeNotifier {
 
       if (targetDeviceId == _deviceId) {
         // Traer la salida de audio a ESTE dispositivo
+        _remoteOutputDeviceId = null;
+        _remoteOutputDeviceName = null;
+        _isRemotePlaying = false;
+        _updateRemoteProgressTicker();
         _lastHandledCommandId = commandId;
+        try {
+          await _realtimeChannel?.sendBroadcastMessage(
+            event: 'remote_cmd',
+            payload: newPlaybackState,
+          );
+        } catch (_) {}
         await supabase.from('user_preferences').update({
           'playback_state': newPlaybackState,
           'active_device': newActiveDevice,
@@ -834,11 +1103,27 @@ class AudioProvider with ChangeNotifier {
         }).eq('username', _currentUsername!);
         await _playTransferredSong(songPayload, positionMs);
       } else {
-        // Enviar la salida de audio a OTRO dispositivo y pausar este
+        // Enviar la salida de audio a OTRO dispositivo, pausar este y activar modo Control Remoto (Spotify Connect)
         _lastHandledCommandId = commandId;
         await _audioPlayer.pause();
         _isPlaying = false;
+        _remoteOutputDeviceId = targetDeviceId;
+        _remoteOutputDeviceName = targetName;
+        _isRemotePlaying = true;
+        _currentPlayingSong = songToTransfer;
+        _currentPosition = Duration(milliseconds: positionMs);
+        if ((songToTransfer.duration ?? 0) > 0) {
+          _totalDuration = Duration(milliseconds: songToTransfer.duration!);
+        }
+        _updateRemoteProgressTicker();
         notifyListeners();
+
+        try {
+          await _realtimeChannel?.sendBroadcastMessage(
+            event: 'remote_cmd',
+            payload: newPlaybackState,
+          );
+        } catch (_) {}
 
         await supabase.from('user_preferences').update({
           'playback_state': newPlaybackState,
@@ -997,6 +1282,7 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> updateActiveDeviceInCloud() async {
+    if (isControllingRemoteDevice && !_isPlaying) return;
     final prefs = await SharedPreferences.getInstance();
     final username = _currentUsername ?? prefs.getString('current_username');
     if (username == null || username.isEmpty) return;
@@ -1010,7 +1296,7 @@ class AudioProvider with ChangeNotifier {
               'id': cs.id,
               'title': cs.title,
               'artist': cs.artist ?? 'Artista desconocido',
-              'duration': cs.duration ?? 0,
+              'duration': cs.duration ?? _totalDuration.inMilliseconds,
               '_data': cs.data,
               'youtube_id': cs.getMap['youtube_id'] ?? '',
             }
@@ -1048,7 +1334,7 @@ class AudioProvider with ChangeNotifier {
     }
   }
   
-  bool get isPlaying => _isPlaying;
+  bool get isPlaying => isControllingRemoteDevice ? _isRemotePlaying : _isPlaying;
   bool get isShuffle => _isShuffle;
   LoopMode get loopMode => _loopMode;
   Duration get currentPosition => _currentPosition;
@@ -1168,6 +1454,7 @@ class AudioProvider with ChangeNotifier {
 
   void _listenToPlayerEvents() {
     _audioPlayer.playerStateStream.listen((state) {
+      final prevPlaying = _isPlaying;
       _isPlaying = state.playing;
       if (state.playing && !EqualizerService.isInitialized) {
         final sessionId = _audioPlayer.androidAudioSessionId;
@@ -1175,14 +1462,17 @@ class AudioProvider with ChangeNotifier {
           EqualizerService.init(sessionId);
         }
       }
-      if (state.processingState == ProcessingState.completed && !_isAutoAdvancing) {
+      if (prevPlaying != _isPlaying && !isControllingRemoteDevice) {
+        updateActiveDeviceInCloud();
+      }
+      if (state.processingState == ProcessingState.completed && !_isAutoAdvancing && !isControllingRemoteDevice) {
         _isAutoAdvancing = true;
         Future.microtask(() async {
           try {
             if (_playbackMode == 'smart_shuffle') {
-              await nextSong();
+              await nextSong(forceLocal: true);
             } else if (_isSingleTrackSource && songs.isNotEmpty) {
-              await nextSong();
+              await nextSong(forceLocal: true);
             }
           } finally {
             _isAutoAdvancing = false;
@@ -1193,13 +1483,17 @@ class AudioProvider with ChangeNotifier {
     });
 
     _audioPlayer.positionStream.listen((position) {
-      _currentPosition = position;
-      notifyListeners();
+      if (!isControllingRemoteDevice) {
+        _currentPosition = position;
+        notifyListeners();
+      }
     });
 
     _audioPlayer.durationStream.listen((duration) {
-      _totalDuration = duration ?? Duration.zero;
-      notifyListeners();
+      if (!isControllingRemoteDevice && duration != null && duration > Duration.zero) {
+        _totalDuration = duration;
+        notifyListeners();
+      }
     });
 
     _audioPlayer.currentIndexStream.listen((index) {
@@ -1494,33 +1788,77 @@ class AudioProvider with ChangeNotifier {
 
   Future<void> fetchSongs() async {
     if (kIsWeb || (!kIsWeb && !Platform.isAndroid && !Platform.isIOS)) {
+      List<Map<String, dynamic>> pcLocalFiles = [];
       try {
         final res = await http.get(Uri.parse('/api/local-songs')).timeout(const Duration(seconds: 2));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body);
-          if (data is Map && data['keys'] is List) {
-            _pcDownloadedSongKeys = (data['keys'] as List).map((e) => e.toString()).toSet();
+          if (data is Map) {
+            if (data['keys'] is List) {
+              _pcDownloadedSongKeys = (data['keys'] as List).map((e) => e.toString()).toSet();
+            }
+            if (data['songs'] is List) {
+              pcLocalFiles = (data['songs'] as List)
+                  .whereType<Map>()
+                  .map((e) => Map<String, dynamic>.from(e))
+                  .toList();
+            }
           }
         }
       } catch (_) {}
 
-      _allSongs = _cloudLibrarySongs.map((c) {
+      final List<SongModel> combinedPcSongs = [];
+      final Set<String> addedNorms = {};
+
+      for (final c in _cloudLibrarySongs) {
         final titleStr = (c['title'] ?? 'Sin título').toString();
+        final artistStr = (c['artist'] ?? 'Artista desconocido').toString();
         final norm = normalizeForDedup(titleStr);
-        final isDownloadedOnPc = norm.isNotEmpty &&
-            (_pcDownloadedSongKeys.contains(norm) ||
-                _pcDownloadedSongKeys.any((k) =>
-                    k.length >= 6 && norm.length >= 6 && (k.contains(norm) || norm.contains(k))));
-        return SongModel({
+        final normFull = normalizeForDedup('$artistStr $titleStr');
+        if (norm.isNotEmpty) addedNorms.add(norm);
+        if (normFull.isNotEmpty) addedNorms.add(normFull);
+
+        final isDownloadedOnPc = isCloudItemDownloadedOnDevice(c);
+        combinedPcSongs.add(SongModel({
           '_id': c['id'] is int ? c['id'] : int.tryParse(c['id'].toString()) ?? DateTime.now().millisecondsSinceEpoch,
           'title': titleStr,
-          'artist': c['artist'] ?? 'Artista desconocido',
+          'artist': artistStr,
           'duration': c['duration'] is int ? c['duration'] : int.tryParse(c['duration'].toString()) ?? 0,
           '_data': c['url'] ?? '',
           'is_cloud': !isDownloadedOnPc,
           'youtube_id': c['youtube_id'] ?? '',
-        });
-      }).toList();
+        }));
+      }
+
+      // Agregar también cualquier archivo MP3 descargado en la PC que aún no estuviera en _cloudLibrarySongs
+      for (final lf in pcLocalFiles) {
+        final rawTitle = (lf['title'] ?? '').toString().trim();
+        if (rawTitle.isEmpty) continue;
+        final lNorm = normalizeForDedup(rawTitle);
+        final sNorm = (lf['short_norm'] ?? '').toString();
+        if (addedNorms.contains(lNorm) || (sNorm.isNotEmpty && addedNorms.contains(sNorm))) {
+          continue;
+        }
+        String parsedArtist = 'NovaMusic PC';
+        String parsedTitle = rawTitle;
+        if (rawTitle.contains(' - ')) {
+          final parts = rawTitle.split(' - ');
+          parsedArtist = parts.first.trim();
+          parsedTitle = parts.sublist(1).join(' - ').trim();
+        }
+        addedNorms.add(lNorm);
+        combinedPcSongs.add(SongModel({
+          '_id': rawTitle.hashCode.abs() % 2147483647,
+          'title': parsedTitle.isNotEmpty ? parsedTitle : rawTitle,
+          'artist': parsedArtist,
+          'duration': 0,
+          '_data': lf['path'] ?? '',
+          'is_cloud': false,
+          'youtube_id': '',
+        }));
+      }
+
+      _allSongs = combinedPcSongs;
       _visibleSongs = _allSongs.where((song) => !_isSongHiddenOrDeleted(song)).toList();
       _applySort();
       _needsPlaylistRebuild = true;
@@ -1835,23 +2173,23 @@ class AudioProvider with ChangeNotifier {
         // En PC / Web usar el proxy local libre de CORS (/api/stream)
         final queryStr = '${song.title} ${song.artist ?? ""}'.trim();
         final streamUri = Uri.parse(
-          '/api/stream?id=${Uri.encodeComponent(ytId)}&q=${Uri.encodeComponent(queryStr)}',
+          '/api/stream?id=${Uri.encodeComponent(ytId)}&title=${Uri.encodeComponent(song.title)}&artist=${Uri.encodeComponent(song.artist ?? "")}&q=${Uri.encodeComponent(queryStr)}',
         );
         final source = AudioSource.uri(streamUri, tag: mediaItem);
         await _audioPlayer
             .setAudioSource(source, initialPosition: initialPosition)
-            .timeout(const Duration(seconds: 15));
+            .timeout(const Duration(seconds: 20));
         _currentIndex = index;
         _currentPlayingSong = song;
         _isConnectingCloudStream = false;
         _isPlaying = true;
         notifyListeners();
-        await _audioPlayer.play();
         if (initialPosition > Duration.zero) {
           try {
             await _audioPlayer.seek(initialPosition);
           } catch (_) {}
         }
+        unawaited(_audioPlayer.play());
         updateActiveDeviceInCloud();
         return;
       }
@@ -1911,12 +2249,12 @@ class AudioProvider with ChangeNotifier {
       _isConnectingCloudStream = false;
       _isPlaying = true;
       notifyListeners();
-      await _audioPlayer.play();
       if (initialPosition > Duration.zero) {
         try {
           await _audioPlayer.seek(initialPosition);
         } catch (_) {}
       }
+      unawaited(_audioPlayer.play());
       updateActiveDeviceInCloud();
     } catch (e) {
       _isConnectingCloudStream = false;
@@ -1925,9 +2263,32 @@ class AudioProvider with ChangeNotifier {
     }
   }
 
-  Future<void> playSong(int index, {Duration initialPosition = Duration.zero}) async {
+  Future<void> playSong(
+    int index, {
+    Duration initialPosition = Duration.zero,
+    bool forceLocal = false,
+  }) async {
     final currentList = songs;
     if (index < 0 || index >= currentList.length) return;
+
+    // Si estamos controlando otro dispositivo (modo Spotify Connect) y no se forzó reproducción local,
+    // enviar la canción elegida para que suene en el otro dispositivo
+    if (isControllingRemoteDevice && !forceLocal) {
+      final targetSong = currentList[index];
+      _currentIndex = index;
+      _currentPlayingSong = targetSong;
+      _currentPosition = initialPosition;
+      _totalDuration = Duration(milliseconds: targetSong.duration ?? 0);
+      _isRemotePlaying = true;
+      _updateRemoteProgressTicker();
+      notifyListeners();
+      await sendRemoteCommand(
+        action: 'play',
+        song: targetSong,
+        positionMs: initialPosition.inMilliseconds,
+      );
+      return;
+    }
 
     // Si estaba sonando una canción recomendada y el usuario toca una canción de su lista,
     // limpiar la canción recomendada actual pero MANTENER el modo Aleatorio Inteligente si estaba activo
@@ -1967,12 +2328,14 @@ class AudioProvider with ChangeNotifier {
         final session = await AudioSession.instance;
         await session.setActive(true);
       }
-      await _audioPlayer.play();
+      _isPlaying = true;
+      notifyListeners();
       if (initialPosition > Duration.zero && (_audioPlayer.position - initialPosition).abs().inSeconds > 2) {
         try {
           await _audioPlayer.seek(initialPosition);
         } catch (_) {}
       }
+      unawaited(_audioPlayer.play());
       updateActiveDeviceInCloud();
     } catch (e) {
       print("Error playing song: $e");
@@ -1981,6 +2344,20 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> playPause() async {
+    // Si estamos controlando otro dispositivo (ej. Celular controlando la PC), pausar o reanudar el otro dispositivo
+    if (isControllingRemoteDevice) {
+      final nextState = !_isRemotePlaying;
+      _isRemotePlaying = nextState;
+      _updateRemoteProgressTicker();
+      notifyListeners();
+      await sendRemoteCommand(
+        action: nextState ? 'resume' : 'pause',
+        song: currentSong,
+        positionMs: _currentPosition.inMilliseconds,
+      );
+      return;
+    }
+
     if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       try {
         final session = await AudioSession.instance;
@@ -1989,21 +2366,39 @@ class AudioProvider with ChangeNotifier {
     }
     if (_audioPlayer.playing) {
       await _audioPlayer.pause();
+      _isPlaying = false;
     } else {
-      await _audioPlayer.play();
+      _isPlaying = true;
+      unawaited(_audioPlayer.play());
     }
+    notifyListeners();
     updateActiveDeviceInCloud();
   }
 
-  Future<void> nextSong() async {
+  Future<void> nextSong({bool forceLocal = false}) async {
     final currentList = songs;
+    if (isControllingRemoteDevice && !forceLocal) {
+      if (currentList.isNotEmpty) {
+        int nextIdx;
+        if (_isShuffle && currentList.length > 1) {
+          nextIdx = Random().nextInt(currentList.length);
+        } else {
+          nextIdx = ((_currentIndex ?? -1) + 1) % currentList.length;
+        }
+        await playSong(nextIdx, forceLocal: false);
+      } else {
+        await sendRemoteCommand(action: 'next');
+      }
+      return;
+    }
+
     if (_playbackMode == 'smart_shuffle') {
       // En Modo Aleatorio Inteligente (tipo Spotify Smart Shuffle):
       // Intercala canciones de tu lista en modo aleatorio con canciones nuevas recomendadas (cada 2 canciones locales)
       if (isPlayingDiscoverySong && currentList.isNotEmpty) {
         _smartShuffleLocalCounter = 1;
         final nextIdx = Random().nextInt(currentList.length);
-        await playSong(nextIdx);
+        await playSong(nextIdx, forceLocal: true);
         return;
       }
       _smartShuffleLocalCounter++;
@@ -2013,7 +2408,7 @@ class AudioProvider with ChangeNotifier {
         return;
       }
       final nextIdx = Random().nextInt(currentList.length);
-      await playSong(nextIdx);
+      await playSong(nextIdx, forceLocal: true);
       return;
     }
 
@@ -2029,11 +2424,28 @@ class AudioProvider with ChangeNotifier {
       } else {
         nextIdx = ((_currentIndex ?? -1) + 1) % currentList.length;
       }
-      await playSong(nextIdx);
+      await playSong(nextIdx, forceLocal: true);
     }
   }
 
-  Future<void> previousSong() async {
+  Future<void> previousSong({bool forceLocal = false}) async {
+    if (isControllingRemoteDevice && !forceLocal) {
+      if (_currentPosition.inSeconds > 3 && currentSong != null) {
+        _currentPosition = Duration.zero;
+        notifyListeners();
+        await sendRemoteCommand(action: 'seek', song: currentSong, positionMs: 0);
+        return;
+      }
+      final currentList = songs;
+      if (currentList.isNotEmpty) {
+        final prevIdx = ((_currentIndex ?? 1) - 1 + currentList.length) % currentList.length;
+        await playSong(prevIdx, forceLocal: false);
+      } else {
+        await sendRemoteCommand(action: 'previous');
+      }
+      return;
+    }
+
     if (_currentPosition.inSeconds > 3) {
       await _audioPlayer.seek(Duration.zero);
       return;
@@ -2046,7 +2458,7 @@ class AudioProvider with ChangeNotifier {
     final currentList = songs;
     if (currentList.isNotEmpty) {
       final prevIdx = ((_currentIndex ?? 1) - 1 + currentList.length) % currentList.length;
-      await playSong(prevIdx);
+      await playSong(prevIdx, forceLocal: true);
     }
   }
 
@@ -2432,7 +2844,7 @@ class AudioProvider with ChangeNotifier {
         await audioSession.setActive(true);
         _isPlaying = true;
         notifyListeners();
-        await _audioPlayer.play();
+        unawaited(_audioPlayer.play());
         updateActiveDeviceInCloud();
 
         // Mostrar notificación interactiva con botones ❤️ Me gusta (Guardar) y ✕ Quitar
@@ -2598,7 +3010,20 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> seekTo(Duration position) async {
+    if (isControllingRemoteDevice) {
+      _currentPosition = position;
+      notifyListeners();
+      await sendRemoteCommand(
+        action: 'seek',
+        song: currentSong,
+        positionMs: position.inMilliseconds,
+      );
+      return;
+    }
     await _audioPlayer.seek(position);
+    _currentPosition = position;
+    notifyListeners();
+    updateActiveDeviceInCloud();
   }
 
   Future<void> toggleShuffle() async {

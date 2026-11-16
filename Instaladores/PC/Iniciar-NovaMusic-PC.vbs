@@ -59,12 +59,12 @@ If Not ready Then
     Next
 End If
 
-' 4. Abrir en modo aplicación nativa de escritorio (sin barras de navegador)
+' 4. Abrir en modo aplicación nativa de escritorio (sin barras de navegador y permitiendo reproducción remota sin clic previo)
 On Error Resume Next
-WshShell.Run "msedge.exe --app=" & url, 3, False
+WshShell.Run "msedge.exe --autoplay-policy=no-user-gesture-required --app=" & url, 3, False
 If Err.Number <> 0 Then
     Err.Clear
-    WshShell.Run "chrome.exe --app=" & url, 3, False
+    WshShell.Run "chrome.exe --autoplay-policy=no-user-gesture-required --app=" & url, 3, False
     If Err.Number <> 0 Then
         Err.Clear
         WshShell.Run url, 3, False

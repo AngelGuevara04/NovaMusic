@@ -1062,117 +1062,194 @@ class MiniPlayer extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<AudioProvider>(
       builder: (context, audioProvider, child) {
-        if (audioProvider.currentSong == null) {
+        if (audioProvider.currentSong == null && !audioProvider.isControllingRemoteDevice) {
           return const SizedBox.shrink();
         }
 
-        final song = audioProvider.currentSong!;
+        final song = audioProvider.currentSong;
         final isDiscovery = audioProvider.isPlayingDiscoverySong;
+        final isRemote = audioProvider.isControllingRemoteDevice;
 
-        return GestureDetector(
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const PlayerScreen()),
-            );
-          },
-          child: Container(
-            height: 68,
-            margin: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF262626),
-              borderRadius: BorderRadius.circular(34),
-              border: isDiscovery
-                  ? Border.all(color: Colors.amberAccent.withOpacity(0.5), width: 1)
-                  : null,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.5),
-                  blurRadius: 10,
-                  offset: const Offset(0, -2),
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isRemote)
+              Container(
+                margin: const EdgeInsets.only(left: 14, right: 14, top: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1DB954).withOpacity(0.18),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.greenAccent.withOpacity(0.5)),
                 ),
-              ],
-            ),
-            child: Row(
-              children: [
-                const SizedBox(width: 10),
-                Hero(
-                  tag: 'artwork_${song.id}',
-                  child: CircleAvatar(
-                    radius: 23,
-                    backgroundColor: isDiscovery
-                        ? Colors.amberAccent.withOpacity(0.18)
-                        : Colors.white10,
-                    child: Icon(
-                      isDiscovery ? Icons.auto_awesome : Icons.music_note,
-                      color: isDiscovery ? Colors.amberAccent : Colors.deepPurpleAccent,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        song.title,
+                child: Row(
+                  children: [
+                    const Icon(Icons.speaker_group_rounded, color: Colors.greenAccent, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Escuchando en ${audioProvider.remoteOutputDeviceName}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          color: Colors.white,
+                          color: Colors.greenAccent,
+                          fontSize: 12,
                           fontWeight: FontWeight.bold,
-                          fontSize: 14,
                         ),
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        isDiscovery
-                            ? '✨ ${song.artist ?? "Recomendación"} • ${audioProvider.currentDiscoverySeedInfo}'
-                            : (song.artist ?? 'Artista desconocido'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: isDiscovery ? Colors.amberAccent : const Color(0xFFCCCCCC),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
+                    ),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        backgroundColor: Colors.greenAccent.shade700,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      onPressed: () {
+                        if (audioProvider.deviceId != null) {
+                          audioProvider.switchAudioOutput(audioProvider.deviceId!);
+                        }
+                      },
+                      child: const Text(
+                        'Sonar aquí',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    InkWell(
+                      onTap: () => showDeviceOutputSwitcherDialog(context),
+                      child: const Padding(
+                        padding: EdgeInsets.all(2.0),
+                        child: Icon(Icons.swap_horiz_rounded, color: Colors.white70, size: 18),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (song != null)
+              GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const PlayerScreen()),
+                  );
+                },
+                child: Container(
+                  height: 68,
+                  margin: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF262626),
+                    borderRadius: BorderRadius.circular(34),
+                    border: isRemote
+                        ? Border.all(color: Colors.greenAccent.withOpacity(0.55), width: 1.2)
+                        : (isDiscovery
+                            ? Border.all(color: Colors.amberAccent.withOpacity(0.5), width: 1)
+                            : null),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.5),
+                        blurRadius: 10,
+                        offset: const Offset(0, -2),
                       ),
                     ],
                   ),
-                ),
-                if (isDiscovery && !audioProvider.isCurrentDiscoverySaved)
-                  IconButton(
-                    tooltip: 'Guardar en mi lista',
-                    icon: const Icon(Icons.favorite_border, color: Colors.pinkAccent, size: 24),
-                    onPressed: () async {
-                      final ok = await audioProvider.likeCurrentDiscoverySong();
-                      if (ok && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            backgroundColor: Colors.green,
-                            content: Text('✅ Canción guardada en tu Lista de Canciones'),
+                  child: Row(
+                    children: [
+                      const SizedBox(width: 10),
+                      Hero(
+                        tag: 'artwork_${song.id}',
+                        child: CircleAvatar(
+                          radius: 23,
+                          backgroundColor: isDiscovery
+                              ? Colors.amberAccent.withOpacity(0.18)
+                              : Colors.white10,
+                          child: Icon(
+                            isDiscovery ? Icons.auto_awesome : Icons.music_note,
+                            color: isDiscovery ? Colors.amberAccent : Colors.deepPurpleAccent,
                           ),
-                        );
-                      }
-                    },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              song.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              isRemote
+                                  ? '🔊 En ${audioProvider.remoteOutputDeviceName} • ${song.artist ?? ""}'
+                                  : (isDiscovery
+                                      ? '✨ ${song.artist ?? "Recomendación"} • ${audioProvider.currentDiscoverySeedInfo}'
+                                      : (song.artist ?? 'Artista desconocido')),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: isRemote
+                                    ? Colors.greenAccent
+                                    : (isDiscovery ? Colors.amberAccent : const Color(0xFFCCCCCC)),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (isDiscovery && !audioProvider.isCurrentDiscoverySaved)
+                        IconButton(
+                          tooltip: 'Guardar en mi lista',
+                          icon: const Icon(Icons.favorite_border, color: Colors.pinkAccent, size: 22),
+                          onPressed: () async {
+                            final ok = await audioProvider.likeCurrentDiscoverySong();
+                            if (ok && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  backgroundColor: Colors.green,
+                                  content: Text('✅ Canción guardada en tu Lista de Canciones'),
+                                ),
+                              );
+                            }
+                          },
+                        ),
+                      IconButton(
+                        tooltip: 'Cambiar dispositivo de salida (Celular / PC)',
+                        icon: Icon(
+                          Icons.speaker_group_outlined,
+                          color: isRemote ? Colors.greenAccent : Colors.white70,
+                          size: 22,
+                        ),
+                        onPressed: () => showDeviceOutputSwitcherDialog(context),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          audioProvider.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                          color: isRemote ? Colors.greenAccent : Theme.of(context).primaryColor,
+                          size: 40,
+                        ),
+                        onPressed: () => audioProvider.playPause(),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.skip_next, color: Colors.white, size: 28),
+                        onPressed: () => audioProvider.nextSong(),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                   ),
-                IconButton(
-                  icon: Icon(
-                    audioProvider.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
-                    color: Theme.of(context).primaryColor,
-                    size: 40,
-                  ),
-                  onPressed: () => audioProvider.playPause(),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.skip_next, color: Colors.white, size: 28),
-                  onPressed: () => audioProvider.nextSong(),
-                ),
-                const SizedBox(width: 6),
-              ],
-            ),
-          ),
+              ),
+          ],
         );
       },
     );

@@ -61,32 +61,62 @@ def get_local_music_files():
                     full_path = os.path.join(d, fname)
                     if not os.path.isfile(full_path):
                         continue
+                    fsize = os.path.getsize(full_path)
+                    if fsize < 10240:
+                        continue
                     title_part = os.path.splitext(fname)[0].replace('_', ' ').strip()
                     norm = normalize_key(title_part)
+                    short_norm = ""
+                    rev_norm = ""
+                    if " - " in title_part:
+                        parts = title_part.split(" - ", 1)
+                        short_norm = normalize_key(parts[1])
+                        rev_norm = normalize_key(f"{parts[1]} {parts[0]}")
                     if norm and norm not in seen_norms:
                         seen_norms.add(norm)
                         results.append({
                             "filename": fname,
                             "title": title_part,
                             "norm": norm,
+                            "short_norm": short_norm,
+                            "rev_norm": rev_norm,
                             "path": full_path,
-                            "size": os.path.getsize(full_path),
+                            "size": fsize,
                         })
         except Exception:
             pass
     return results
 
-def find_local_audio_file(query_or_title: str):
-    target_norm = normalize_key(query_or_title)
-    if not target_norm:
+def find_local_audio_file(query_or_title: str, title: str = "", artist: str = ""):
+    candidates = []
+    if title and artist:
+        candidates.append(normalize_key(build_safe_filename(title, artist)))
+        candidates.append(normalize_key(f"{artist} {title}"))
+        candidates.append(normalize_key(f"{title} {artist}"))
+    if title:
+        candidates.append(normalize_key(title))
+    if query_or_title:
+        candidates.append(normalize_key(query_or_title))
+
+    candidates = [c for c in candidates if c]
+    if not candidates:
         return None
+
     files = get_local_music_files()
-    for f in files:
-        fnorm = f["norm"]
-        if fnorm == target_norm:
-            return f["path"]
-        if len(fnorm) >= 6 and len(target_norm) >= 6:
-            if fnorm in target_norm or target_norm in fnorm:
+    for c in candidates:
+        for f in files:
+            if c == f["norm"] or (f.get("short_norm") and c == f["short_norm"]) or (f.get("rev_norm") and c == f["rev_norm"]):
+                return f["path"]
+
+    for c in candidates:
+        if len(c) < 5:
+            continue
+        for f in files:
+            fnorm = f["norm"]
+            snorm = f.get("short_norm") or ""
+            if len(fnorm) >= 5 and (fnorm in c or c in fnorm):
+                return f["path"]
+            if len(snorm) >= 5 and (snorm in c or c in snorm):
                 return f["path"]
     return None
 
@@ -98,6 +128,7 @@ def resolve_yt_stream(video_id="", query=""):
         if cached and (now - cached["ts"] < 1500):
             return cached["url"]
 
+    android_ua = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
     try:
         if not video_id and query:
             search_req = urllib.request.Request(
@@ -119,49 +150,78 @@ def resolve_yt_stream(video_id="", query=""):
                 if m:
                     video_id = m.group(1)
 
-        if not video_id:
-            return None
-
-        player_req = urllib.request.Request(
-            "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            data=json.dumps({
-                "context": {
-                    "client": {
-                        "clientName": "ANDROID",
-                        "clientVersion": "20.10.38",
-                        "androidSdkVersion": 34
-                    }
+        if video_id:
+            player_req = urllib.request.Request(
+                "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+                data=json.dumps({
+                    "context": {
+                        "client": {
+                            "clientName": "ANDROID",
+                            "clientVersion": "20.10.38",
+                            "androidSdkVersion": 34
+                        }
+                    },
+                    "videoId": video_id
+                }).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": android_ua
                 },
-                "videoId": video_id
-            }).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
-            },
-        )
-        with urllib.request.urlopen(player_req, timeout=10) as r:
-            data = json.loads(r.read().decode("utf-8"))
-            streaming_data = data.get("streamingData", {})
-            adaptive = streaming_data.get("adaptiveFormats", [])
-            formats = streaming_data.get("formats", [])
-            audio_candidates = [
-                f for f in adaptive
-                if f.get("url") and "audio" in f.get("mimeType", "")
-            ]
-            if audio_candidates:
+            )
+            with urllib.request.urlopen(player_req, timeout=10) as r:
+                data = json.loads(r.read().decode("utf-8"))
+                streaming_data = data.get("streamingData", {})
+                formats = streaming_data.get("formats", [])
+                adaptive = streaming_data.get("adaptiveFormats", [])
+
+                candidate_urls = []
+                for f in formats:
+                    if f.get("url"):
+                        candidate_urls.append(f["url"])
+                audio_candidates = [
+                    f for f in adaptive
+                    if f.get("url") and "audio" in f.get("mimeType", "")
+                ]
                 audio_candidates.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
-                stream_url = audio_candidates[0]["url"]
-                with _cache_lock:
-                    _stream_cache[cache_key] = {"url": stream_url, "ts": now}
-                return stream_url
-            for f in formats:
-                if f.get("url"):
-                    stream_url = f["url"]
-                    with _cache_lock:
-                        _stream_cache[cache_key] = {"url": stream_url, "ts": now}
-                    return stream_url
+                for f in audio_candidates:
+                    candidate_urls.append(f["url"])
+
+                for cand_url in candidate_urls:
+                    try:
+                        probe_req = urllib.request.Request(
+                            cand_url,
+                            headers={"User-Agent": android_ua, "Range": "bytes=0-64"},
+                        )
+                        with urllib.request.urlopen(probe_req, timeout=5) as pr:
+                            if pr.status in (200, 206):
+                                with _cache_lock:
+                                    _stream_cache[cache_key] = {"url": cand_url, "ts": now}
+                                return cand_url
+                    except Exception:
+                        continue
     except Exception:
         pass
+
+    try:
+        import yt_dlp
+        target = f"https://www.youtube.com/watch?v={video_id}" if video_id else f"ytsearch1:{query} official audio"
+        ydl_opts = {
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(target, download=False)
+            if "entries" in info and info["entries"]:
+                info = info["entries"][0]
+            dl_url = info.get("url")
+            if dl_url:
+                with _cache_lock:
+                    _stream_cache[cache_key] = {"url": dl_url, "ts": now}
+                return dl_url
+    except Exception:
+        pass
+
     return None
 
 def build_safe_filename(title: str, artist: str) -> str:
@@ -196,6 +256,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _serve_local_file(self, file_path: str):
         try:
             file_size = os.path.getsize(file_path)
+            content_type = "audio/mpeg"
+            try:
+                with open(file_path, "rb") as hf:
+                    head16 = hf.read(16)
+                    if b"ftyp" in head16:
+                        content_type = "audio/mp4"
+                    elif b"OggS" in head16:
+                        content_type = "audio/ogg"
+                    elif b"\x1a\x45\xdf\xa3" in head16:
+                        content_type = "audio/webm"
+            except Exception:
+                pass
+
             range_hdr = self.headers.get("Range")
             start = 0
             end = file_size - 1
@@ -212,7 +285,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             length = max(0, end - start + 1)
             self.send_response(status)
-            self.send_header("Content-Type", "audio/mpeg" if file_path.lower().endswith(".mp3") else "audio/mp4")
+            self.send_header("Content-Type", content_type)
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(length))
             if status == 206:
@@ -237,10 +310,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/local-songs":
             files = get_local_music_files()
+            all_keys = []
+            for f in files:
+                if f.get("norm"):
+                    all_keys.append(f["norm"])
+                if f.get("short_norm"):
+                    all_keys.append(f["short_norm"])
+                if f.get("rev_norm"):
+                    all_keys.append(f["rev_norm"])
             self._send_json(200, {
                 "ok": True,
                 "music_dir": MUSIC_DIR,
-                "keys": [f["norm"] for f in files],
+                "keys": list(dict.fromkeys(all_keys)),
                 "songs": files,
             })
             return
@@ -361,18 +442,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(parsed.query)
             vid = params.get("id", [""])[0].strip()
             q = params.get("q", [""])[0].strip()
+            title = params.get("title", [""])[0].strip()
+            artist = params.get("artist", [""])[0].strip()
 
-            if q:
-                local_file = find_local_audio_file(q)
-                if local_file and os.path.exists(local_file):
-                    if self._serve_local_file(local_file):
-                        return
+            local_file = find_local_audio_file(q, title=title, artist=artist)
+            if local_file and os.path.exists(local_file):
+                if self._serve_local_file(local_file):
+                    return
 
-            stream_url = resolve_yt_stream(video_id=vid, query=q)
+            stream_url = resolve_yt_stream(video_id=vid, query=q or f"{title} {artist}".strip())
             if not stream_url:
                 self.send_response(404)
                 self.end_headers()
                 return
+
+            def _bg_cache_song():
+                try:
+                    safe_base = build_safe_filename(title or q, artist)
+                    dest_path = os.path.join(MUSIC_DIR, f"{safe_base}.mp3")
+                    if os.path.exists(dest_path) and os.path.getsize(dest_path) > 10240:
+                        return
+                    os.makedirs(MUSIC_DIR, exist_ok=True)
+                    tmp_p = dest_path + ".bgpart"
+                    bg_req = urllib.request.Request(
+                        stream_url,
+                        headers={"User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"},
+                    )
+                    with urllib.request.urlopen(bg_req, timeout=25) as up, open(tmp_p, "wb") as out_f:
+                        while True:
+                            ch = up.read(65536)
+                            if not ch:
+                                break
+                            out_f.write(ch)
+                    if os.path.exists(tmp_p) and os.path.getsize(tmp_p) > 10240:
+                        if os.path.exists(dest_path):
+                            os.remove(dest_path)
+                        os.replace(tmp_p, dest_path)
+                except Exception:
+                    pass
+
+            if title or q:
+                threading.Thread(target=_bg_cache_song, daemon=True).start()
 
             headers = {
                 "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"

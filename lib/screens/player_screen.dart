@@ -498,20 +498,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
-                // Indicador de dispositivo activo
+                // Indicador de dispositivo activo (con soporte Spotify Connect)
                 Consumer<AudioProvider>(
                   builder: (context, audioProvider, child) {
+                    final isRemote = audioProvider.isControllingRemoteDevice;
+                    final labelText = isRemote
+                        ? '🔊 Escuchando en: ${audioProvider.remoteOutputDeviceName} (Control remoto)'
+                        : (audioProvider.isPlaying
+                            ? 'Reproduciendo en: ${audioProvider.currentDeviceName}'
+                            : 'Pausado en: ${audioProvider.currentDeviceName}');
+
                     return InkWell(
                       borderRadius: BorderRadius.circular(20),
                       onTap: () => showDeviceOutputSwitcherDialog(context),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF202020),
+                          color: isRemote
+                              ? Colors.greenAccent.withValues(alpha: 0.15)
+                              : const Color(0xFF202020),
                           borderRadius: BorderRadius.circular(20),
                           border: Border.all(
-                            color: audioProvider.isPlaying
-                                ? Colors.greenAccent.withValues(alpha: 0.4)
+                            color: (audioProvider.isPlaying || isRemote)
+                                ? Colors.greenAccent.withValues(alpha: 0.6)
                                 : Colors.white24,
                           ),
                         ),
@@ -519,23 +528,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
-                              audioProvider.currentDeviceIcon,
-                              size: 15,
-                              color: audioProvider.isPlaying ? Colors.greenAccent : Colors.white70,
+                              isRemote ? Icons.speaker_group_rounded : audioProvider.currentDeviceIcon,
+                              size: 16,
+                              color: (audioProvider.isPlaying || isRemote) ? Colors.greenAccent : Colors.white70,
                             ),
                             const SizedBox(width: 8),
-                            Text(
-                              audioProvider.isPlaying
-                                  ? 'Reproduciendo en: ${audioProvider.currentDeviceName}'
-                                  : 'Pausado en: ${audioProvider.currentDeviceName}',
-                              style: TextStyle(
-                                color: audioProvider.isPlaying ? Colors.greenAccent : Colors.white70,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
+                            Flexible(
+                              child: Text(
+                                labelText,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: (audioProvider.isPlaying || isRemote) ? Colors.greenAccent : Colors.white70,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                             const SizedBox(width: 6),
-                            const Icon(Icons.info_outline, size: 13, color: Colors.white38),
+                            const Icon(Icons.swap_horiz_rounded, size: 15, color: Colors.white54),
                           ],
                         ),
                       ),

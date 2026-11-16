@@ -128,14 +128,14 @@ void showDeviceOutputSwitcherDialog(BuildContext context) {
                         color: const Color(0xFF181818),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: audioProvider.isPlaying ? Colors.greenAccent.withOpacity(0.6) : Colors.white24,
+                          color: audioProvider.isLocalPlaying ? Colors.greenAccent.withOpacity(0.6) : Colors.white24,
                         ),
                       ),
                       child: Row(
                         children: [
                           Icon(
                             audioProvider.currentDeviceIcon,
-                            color: audioProvider.isPlaying ? Colors.greenAccent : Colors.white70,
+                            color: audioProvider.isLocalPlaying ? Colors.greenAccent : Colors.white70,
                             size: 24,
                           ),
                           const SizedBox(width: 10),
@@ -148,18 +148,22 @@ void showDeviceOutputSwitcherDialog(BuildContext context) {
                                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
                                 ),
                                 Text(
-                                  audioProvider.isPlaying
+                                  audioProvider.isLocalPlaying
                                       ? '🔊 Salida de audio activa aquí'
-                                      : 'En espera (conectado)',
+                                      : (audioProvider.isControllingRemoteDevice
+                                          ? '📱 Activo como Control Remoto (${audioProvider.remoteOutputDeviceName})'
+                                          : 'En espera (conectado)'),
                                   style: TextStyle(
-                                    color: audioProvider.isPlaying ? Colors.greenAccent : Colors.white54,
+                                    color: audioProvider.isLocalPlaying
+                                        ? Colors.greenAccent
+                                        : (audioProvider.isControllingRemoteDevice ? Colors.cyanAccent : Colors.white54),
                                     fontSize: 12,
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                          if (audioProvider.isPlaying)
+                          if (audioProvider.isLocalPlaying)
                             const Icon(Icons.graphic_eq, color: Colors.greenAccent, size: 20)
                           else
                             TextButton(
