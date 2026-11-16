@@ -335,6 +335,67 @@ class NovaHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
+        if parsed.path == "/api/app-update":
+            params = urllib.parse.parse_qs(parsed.query)
+            zip_url = params.get("url", [""])[0].strip()
+            if not zip_url:
+                self._send_json(400, {"ok": False, "error": "Falta URL de actualización"})
+                return
+            try:
+                import tempfile
+                import zipfile
+                import shutil
+                import subprocess
+
+                tmp_root = os.path.join(tempfile.gettempdir(), "novamusic_pc_update")
+                if os.path.exists(tmp_root):
+                    shutil.rmtree(tmp_root, ignore_errors=True)
+                os.makedirs(tmp_root, exist_ok=True)
+                zip_path = os.path.join(tmp_root, "update.zip")
+                extract_dir = os.path.join(tmp_root, "files")
+
+                req = urllib.request.Request(zip_url, headers={"User-Agent": "NovaMusic-PC-Updater"})
+                with urllib.request.urlopen(req, timeout=120) as resp, open(zip_path, "wb") as out_f:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        out_f.write(chunk)
+
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extract_dir)
+
+                exe_path = os.path.join(base_dir, "NovaMusic.exe")
+                bat_path = os.path.join(tmp_root, "apply_update.bat")
+                bat_content = (
+                    "@echo off\n"
+                    "timeout /t 2 /nobreak >nul\n"
+                    "taskkill /f /im NovaMusic.exe >nul 2>&1\n"
+                    "timeout /t 1 /nobreak >nul\n"
+                    f"xcopy /E /Y /I \"{extract_dir}\\*\" \"{base_dir}\\\" >nul\n"
+                    f"start \"\" \"{exe_path}\"\n"
+                    "del \"%~f0\" >nul 2>&1\n"
+                )
+                with open(bat_path, "w", encoding="utf-8") as bf:
+                    bf.write(bat_content)
+
+                self._send_json(200, {"ok": True})
+
+                def _launch_and_exit():
+                    time.sleep(0.6)
+                    subprocess.Popen(
+                        ["cmd", "/c", bat_path],
+                        creationflags=0x08000000,
+                        close_fds=True,
+                    )
+                    time.sleep(0.3)
+                    os._exit(0)
+
+                threading.Thread(target=_launch_and_exit, daemon=True).start()
+            except Exception as e:
+                self._send_json(500, {"ok": False, "error": str(e)})
+            return
+
         if parsed.path == "/api/local-songs":
             files = get_local_music_files()
             all_keys = []

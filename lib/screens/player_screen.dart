@@ -8,6 +8,8 @@ import '../providers/downloader_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/lyrics_service.dart';
 import '../widgets/device_output_dialog.dart';
+import '../widgets/song_artwork.dart';
+import '../widgets/queue_sheet.dart';
 import 'equalizer_screen.dart';
 
 class PlayerScreen extends StatefulWidget {
@@ -89,6 +91,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         centerTitle: true,
         actions: [
           IconButton(
+            icon: const Icon(Icons.queue_music_rounded, color: Colors.white),
+            tooltip: 'Cola de reproducción',
+            onPressed: () => showQueueBottomSheet(context),
+          ),
+          IconButton(
             icon: const Icon(Icons.equalizer, color: Colors.white),
             tooltip: 'Ecualizador',
             onPressed: () {
@@ -135,31 +142,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ? _buildLyricsView(context)
                         : Hero(
                             tag: 'artwork_${song.id}',
-                            child: QueryArtworkWidget(
-                              key: ValueKey(song.id),
-                              id: song.id,
-                              type: ArtworkType.AUDIO,
-                              artworkWidth: 300,
-                              artworkHeight: 300,
-                              keepOldArtwork: true,
-                              nullArtworkWidget: Container(
-                                width: 300,
-                                height: 300,
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF2C2C2C),
-                                  borderRadius: BorderRadius.circular(30),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Theme.of(context).primaryColor.withOpacity(0.2),
-                                      blurRadius: 20,
-                                      spreadRadius: 5,
-                                    ),
-                                  ],
-                                ),
-                                child: const Icon(Icons.music_note, size: 120, color: Colors.white24),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(30),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Theme.of(context).primaryColor.withValues(alpha: 0.28),
+                                    blurRadius: 28,
+                                    spreadRadius: 4,
+                                  ),
+                                ],
                               ),
-                              artworkBorder: BorderRadius.circular(30),
-                              artworkFit: BoxFit.cover,
+                              child: SongArtworkWidget(
+                                song: song,
+                                size: 300,
+                                borderRadius: 30,
+                                isCloud: Provider.of<AudioProvider>(context, listen: false).isCloudSong(song),
+                                isDiscovery: Provider.of<AudioProvider>(context, listen: false).isPlayingDiscoverySong,
+                              ),
                             ),
                           ),
                   ),

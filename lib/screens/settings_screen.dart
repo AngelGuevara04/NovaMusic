@@ -1,5 +1,6 @@
 import '../widgets/suggestion_dialog.dart';
 import '../widgets/password_dialogs.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,6 +9,7 @@ import '../services/updater_service.dart';
 import 'cloud_backup_screen.dart';
 import 'hidden_songs_screen.dart';
 import 'equalizer_screen.dart';
+import 'stats_screen.dart';
 import 'login_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -88,9 +90,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     setState(() {
       _isDownloadingUpdate = true;
-      _downloadProgress = 0.0;
-      _downloadStatus = 'Iniciando descarga...';
+      _downloadProgress = kIsWeb ? -1.0 : 0.0;
+      _downloadStatus = kIsWeb
+          ? 'Descargando e instalando actualización en tu PC...'
+          : 'Iniciando descarga...';
     });
+
+    if (kIsWeb) {
+      final ok = await UpdaterService.updatePcApp(_availableRelease!.apkDownloadUrl);
+      if (!mounted) return;
+      setState(() {
+        _isDownloadingUpdate = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? 'Actualización lista. Reiniciando NovaMusic...'
+                : 'No se pudo actualizar la versión de PC automáticamente.',
+          ),
+        ),
+      );
+      return;
+    }
 
     final apkFile = await UpdaterService.downloadApk(
       _availableRelease!.apkDownloadUrl,
@@ -348,6 +370,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           Navigator.push(
                             context,
                             MaterialPageRoute(builder: (context) => const EqualizerScreen()),
+                          );
+                        },
+                      ),
+                      const Divider(color: Colors.white12, height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.waves_rounded, color: Colors.tealAccent),
+                        title: const Text('Transición suave (Crossfade)', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                        subtitle: Text(
+                          audioProvider.crossfadeSeconds == 0
+                              ? 'Desactivado (cambio normal)'
+                              : 'Suavizado de ${audioProvider.crossfadeSeconds} segundos entre canciones',
+                          style: const TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                        ),
+                        trailing: DropdownButton<int>(
+                          value: audioProvider.crossfadeSeconds,
+                          dropdownColor: const Color(0xFF262626),
+                          underline: const SizedBox.shrink(),
+                          style: const TextStyle(color: Colors.tealAccent, fontWeight: FontWeight.bold),
+                          items: const [
+                            DropdownMenuItem(value: 0, child: Text('Off')),
+                            DropdownMenuItem(value: 2, child: Text('2s')),
+                            DropdownMenuItem(value: 4, child: Text('4s')),
+                            DropdownMenuItem(value: 6, child: Text('6s')),
+                          ],
+                          onChanged: (val) {
+                            if (val != null) {
+                              audioProvider.setCrossfadeSeconds(val);
+                            }
+                          },
+                        ),
+                      ),
+                      const Divider(color: Colors.white12, height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.bar_chart_rounded, color: Colors.cyanAccent),
+                        title: const Text('Estadísticas y Lo más escuchado', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                        subtitle: Text(
+                          audioProvider.totalPlayCount == 0
+                              ? 'Mira tus canciones y artistas favoritos'
+                              : '${audioProvider.totalPlayCount} reproducciones registradas',
+                          style: const TextStyle(color: Color(0xFFDDDDDD), fontSize: 13),
+                        ),
+                        trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const StatsScreen()),
                           );
                         },
                       ),

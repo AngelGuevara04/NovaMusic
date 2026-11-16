@@ -24,7 +24,7 @@ class ReleaseInfo {
 }
 
 class UpdaterService {
-  static const String currentVersion = '1.0.0+37';
+  static const String currentVersion = '1.0.0+38';
   static const String repoOwner = 'AngelGuevara04';
   static const String repoName = 'NovaMusic';
   static const MethodChannel _channel = MethodChannel('com.ajgm1.music/updater');
@@ -33,7 +33,7 @@ class UpdaterService {
   /// Revisa automáticamente al abrir la app por primera vez en el día si hay una nueva versión
   /// y muestra un cuadro de actualización de 1 solo toque muy fácil de usar.
   static Future<void> checkAndShowDailyUpdateDialog(BuildContext context) async {
-    if (_checkedThisSession || kIsWeb) return;
+    if (_checkedThisSession) return;
     _checkedThisSession = true;
 
     try {
@@ -95,10 +95,18 @@ class UpdaterService {
         int size = 0;
         for (var asset in assets) {
           final name = (asset['name'] as String? ?? '').toLowerCase();
-          if (name.endsWith('.apk')) {
-            downloadUrl = asset['browser_download_url'] as String?;
-            size = (asset['size'] as num?)?.toInt() ?? 0;
-            break;
+          if (kIsWeb) {
+            if (name.endsWith('.zip') && name.contains('novamusic')) {
+              downloadUrl = asset['browser_download_url'] as String?;
+              size = (asset['size'] as num?)?.toInt() ?? 0;
+              break;
+            }
+          } else {
+            if (name.endsWith('.apk')) {
+              downloadUrl = asset['browser_download_url'] as String?;
+              size = (asset['size'] as num?)?.toInt() ?? 0;
+              break;
+            }
           }
         }
 
@@ -213,6 +221,22 @@ class UpdaterService {
       return false;
     }
   }
+
+  /// Actualiza automáticamente la versión de escritorio en PC (Windows) descargando el ZIP de GitHub y reiniciando NovaMusic.exe
+  static Future<bool> updatePcApp(String zipDownloadUrl) async {
+    if (!kIsWeb) return false;
+    try {
+      final uri = Uri.parse('/api/app-update?url=${Uri.encodeComponent(zipDownloadUrl)}');
+      final res = await http.get(uri).timeout(const Duration(minutes: 4));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        return data is Map && data['ok'] == true;
+      }
+    } catch (e) {
+      debugPrint('Error updating PC app: $e');
+    }
+    return false;
+  }
 }
 
 class _AutoUpdateDialog extends StatefulWidget {
@@ -239,9 +263,27 @@ class _AutoUpdateDialogState extends State<_AutoUpdateDialog> {
     setState(() {
       _isDownloading = true;
       _errorText = null;
-      _progress = 0.0;
-      _statusText = 'Preparando actualización...';
+      _progress = kIsWeb ? -1.0 : 0.0;
+      _statusText = kIsWeb
+          ? 'Descargando e instalando actualización en tu PC...'
+          : 'Preparando actualización...';
     });
+
+    if (kIsWeb) {
+      final ok = await UpdaterService.updatePcApp(widget.release.apkDownloadUrl);
+      if (!mounted) return;
+      if (ok) {
+        setState(() {
+          _statusText = '¡Actualización lista! Reiniciando NovaMusic...';
+        });
+      } else {
+        setState(() {
+          _isDownloading = false;
+          _errorText = 'No se pudo actualizar automáticamente la versión de PC.';
+        });
+      }
+      return;
+    }
 
     final apkFile = await UpdaterService.downloadApk(
       widget.release.apkDownloadUrl,

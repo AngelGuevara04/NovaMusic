@@ -3,6 +3,8 @@ import 'cloud_backup_screen.dart';
 import '../widgets/suggestion_dialog.dart';
 import '../widgets/password_dialogs.dart';
 import '../widgets/device_output_dialog.dart';
+import '../widgets/song_artwork.dart';
+import '../widgets/queue_sheet.dart';
 import '../services/updater_service.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -1160,15 +1162,12 @@ class MiniPlayer extends StatelessWidget {
                       const SizedBox(width: 10),
                       Hero(
                         tag: 'artwork_${song.id}',
-                        child: CircleAvatar(
-                          radius: 23,
-                          backgroundColor: isDiscovery
-                              ? Colors.amberAccent.withOpacity(0.18)
-                              : Colors.white10,
-                          child: Icon(
-                            isDiscovery ? Icons.auto_awesome : Icons.music_note,
-                            color: isDiscovery ? Colors.amberAccent : Colors.deepPurpleAccent,
-                          ),
+                        child: SongArtworkWidget(
+                          song: song,
+                          size: 46,
+                          borderRadius: 23,
+                          isCloud: audioProvider.isCloudSong(song),
+                          isDiscovery: isDiscovery,
                         ),
                       ),
                       const SizedBox(width: 12),

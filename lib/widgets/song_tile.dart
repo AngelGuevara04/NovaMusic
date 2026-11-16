@@ -1,4 +1,5 @@
 import 'add_to_playlist_dialog.dart';
+import 'song_artwork.dart';
 import 'package:flutter/material.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:provider/provider.dart';
@@ -172,19 +173,11 @@ class SongTile extends StatelessWidget {
 
             return ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              leading: Container(
-                width: 50,
-                height: 50,
-                decoration: BoxDecoration(
-                  color: isCloud
-                      ? Colors.lightBlueAccent.withValues(alpha: 0.15)
-                      : Colors.deepPurpleAccent.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(
-                  isCloud ? Icons.cloud_outlined : Icons.music_note,
-                  color: isCloud ? Colors.lightBlueAccent : Colors.deepPurpleAccent,
-                ),
+              leading: SongArtworkWidget(
+                song: song,
+                size: 50,
+                borderRadius: 10,
+                isCloud: isCloud,
               ),
               title: Row(
                 children: [
@@ -310,13 +303,79 @@ class SongTile extends StatelessWidget {
                     tooltip: audioProvider.isFavorite(song.id) ? 'Quitar de favoritas' : 'Marcar como favorita',
                     onPressed: () => audioProvider.toggleFavorite(song),
                   ),
-                  IconButton(
-                    splashRadius: 20,
-                    padding: const EdgeInsets.only(left: 6),
-                    constraints: const BoxConstraints(),
-                    icon: const Icon(Icons.playlist_add, color: Colors.white60, size: 22),
-                    tooltip: 'Añadir a lista de reproducción',
-                    onPressed: () => showAddToPlaylistDialog(context, song),
+                  PopupMenuButton<String>(
+                    padding: const EdgeInsets.only(left: 4),
+                    icon: const Icon(Icons.more_vert, color: Colors.white60, size: 22),
+                    color: const Color(0xFF242424),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    tooltip: 'Opciones de canción',
+                    onSelected: (val) {
+                      if (val == 'play_next') {
+                        audioProvider.playNextInQueue(song);
+                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('⏭️ "${song.title}" sonará a continuación'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      } else if (val == 'add_queue') {
+                        audioProvider.addToQueue(song);
+                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('➕ "${song.title}" añadida a la cola'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      } else if (val == 'playlist') {
+                        showAddToPlaylistDialog(context, song);
+                      } else if (val == 'edit_meta') {
+                        _showEditMetadataDialog(context, audioProvider, song);
+                      }
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem<String>(
+                        value: 'play_next',
+                        child: Row(
+                          children: [
+                            Icon(Icons.playlist_play, color: Colors.cyanAccent, size: 20),
+                            SizedBox(width: 10),
+                            Text('Reproducir a continuación', style: TextStyle(color: Colors.white, fontSize: 13.5)),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'add_queue',
+                        child: Row(
+                          children: [
+                            Icon(Icons.add_to_queue, color: Color(0xFFB388FF), size: 20),
+                            SizedBox(width: 10),
+                            Text('Agregar a la cola', style: TextStyle(color: Colors.white, fontSize: 13.5)),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'playlist',
+                        child: Row(
+                          children: [
+                            Icon(Icons.playlist_add, color: Colors.greenAccent, size: 20),
+                            SizedBox(width: 10),
+                            Text('Añadir a lista de reproducción', style: TextStyle(color: Colors.white, fontSize: 13.5)),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'edit_meta',
+                        child: Row(
+                          children: [
+                            Icon(Icons.edit_outlined, color: Colors.amberAccent, size: 20),
+                            SizedBox(width: 10),
+                            Text('Editar nombre / artista', style: TextStyle(color: Colors.white, fontSize: 13.5)),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -325,6 +384,86 @@ class SongTile extends StatelessWidget {
             );
           },
         ),
+      ),
+    );
+  }
+
+  void _showEditMetadataDialog(BuildContext context, AudioProvider provider, SongModel song) {
+    final titleCtrl = TextEditingController(text: song.title);
+    final artistCtrl = TextEditingController(text: song.artist ?? '');
+    final artCtrl = TextEditingController(text: song.getMap['custom_art_url']?.toString() ?? '');
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Row(
+          children: [
+            Icon(Icons.edit_note_rounded, color: Colors.amberAccent),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text('Editar información', style: TextStyle(color: Colors.white, fontSize: 18)),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Título de la canción',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: artistCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Artista',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: artCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'URL de carátula (opcional)',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  hintText: 'https://...',
+                  hintStyle: TextStyle(color: Colors.white24),
+                  enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            onPressed: () async {
+              await provider.updateSongMetadata(
+                song,
+                newTitle: titleCtrl.text,
+                newArtist: artistCtrl.text,
+                customArtUrl: artCtrl.text,
+              );
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            child: const Text('Guardar', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
       ),
     );
   }

@@ -79,6 +79,24 @@ class AudioProvider with ChangeNotifier {
   bool _isAutoAdvancing = false;
   bool _autoDeleteFromDevice = false;
 
+  // ---- Cola de reproducción ("A continuación") ----
+  final List<SongModel> _upNextQueue = [];
+  List<SongModel> get upNextQueue => List.unmodifiable(_upNextQueue);
+
+  // ---- Transición suave (Crossfade) ----
+  int _crossfadeSeconds = 0; // 0 = desactivado, 2, 4, 6 segundos
+  bool _isCrossfading = false;
+  int get crossfadeSeconds => _crossfadeSeconds;
+
+  // ---- Estadísticas ("Lo más escuchado") ----
+  Map<String, int> _playCounts = {};
+  Map<String, int> _artistPlayCounts = {};
+  String? _lastRecordedPlayKey;
+  DateTime? _lastRecordedPlayTime;
+
+  // ---- Editor rápido de metadatos (título, artista, carátula) ----
+  Map<String, Map<String, String>> _songMetadataOverrides = {};
+
   void _syncLockScreenControls() {
     if (kIsWeb) return;
     final cs = currentSong;
@@ -537,7 +555,7 @@ class AudioProvider with ChangeNotifier {
       final supabase = Supabase.instance.client;
       final res = await supabase
           .from('user_preferences')
-          .select('connected_devices, active_device, playback_state')
+          .select('connected_devices, active_device, playback_state, favorite_songs, playlists, library_songs')
           .eq('username', _currentUsername!)
           .maybeSingle();
       if (res != null) {
@@ -548,6 +566,64 @@ class AudioProvider with ChangeNotifier {
 
   void _handleIncomingCloudRecord(Map<String, dynamic> newRec) {
     bool changed = false;
+
+    // 0. Sincronización instantánea de Favoritas y Listas de Reproducción entre dispositivos
+    if (newRec['favorite_songs'] != null && newRec['favorite_songs'] is List) {
+      final incomingFavs = (newRec['favorite_songs'] as List)
+          .map((e) => int.tryParse(e.toString()))
+          .whereType<int>()
+          .toList();
+      if (!listEquals(incomingFavs, _favoriteSongIds)) {
+        _favoriteSongIds = incomingFavs;
+        _needsPlaylistRebuild = true;
+        SharedPreferences.getInstance().then((prefs) {
+          prefs.setStringList('favorite_songs', _favoriteSongIds.map((e) => e.toString()).toList());
+        });
+        _syncLockScreenControls();
+        changed = true;
+      }
+    }
+
+    if (newRec['playlists'] != null && newRec['playlists'] is List) {
+      try {
+        final incomingPls = (newRec['playlists'] as List)
+            .whereType<Map>()
+            .map((e) => PlaylistModel.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+        final currentJson = jsonEncode(_playlists.map((p) => p.toJson()).toList());
+        final incomingJson = jsonEncode(incomingPls.map((p) => p.toJson()).toList());
+        if (currentJson != incomingJson) {
+          _playlists = incomingPls;
+          SharedPreferences.getInstance().then((prefs) {
+            prefs.setString('cached_playlists', incomingJson);
+          });
+          changed = true;
+        }
+      } catch (_) {}
+    }
+
+    if (newRec['library_songs'] != null && newRec['library_songs'] is List && kIsWeb) {
+      try {
+        final incomingLib = (newRec['library_songs'] as List)
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .where((c) {
+              final norm = normalizeForDedup(c['title'] ?? '');
+              final cId = int.tryParse(c['id']?.toString() ?? '');
+              if (cId != null && _hiddenSongIds.contains(cId)) return false;
+              if (norm.isNotEmpty && (_hiddenSongKeys.contains(norm) || _deletedSongKeys.contains(norm))) return false;
+              return true;
+            })
+            .toList();
+        if (incomingLib.length != _cloudLibrarySongs.length) {
+          _cloudLibrarySongs = incomingLib;
+          SharedPreferences.getInstance().then((prefs) {
+            prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
+          });
+          unawaited(fetchSongs());
+        }
+      } catch (_) {}
+    }
 
     // 1. Sincronizar dispositivos conectados
     if (newRec['connected_devices'] != null && newRec['connected_devices'] is List) {
@@ -1367,6 +1443,9 @@ class AudioProvider with ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     _currentSort = prefs.getString('pref_sort') ?? 'title';
     _autoDeleteFromDevice = prefs.getBool('auto_delete_from_device') ?? false;
+    _crossfadeSeconds = prefs.getInt('pref_crossfade_seconds') ?? 0;
+    await _loadPlayStats();
+    await _loadMetadataOverrides();
     final savedMode = prefs.getString('pref_playback_mode');
     if (savedMode != null && (savedMode == 'normal' || savedMode == 'shuffle_local' || savedMode == 'smart_shuffle')) {
       _playbackMode = savedMode;
@@ -1511,7 +1590,9 @@ class AudioProvider with ChangeNotifier {
         _isAutoAdvancing = true;
         Future.microtask(() async {
           try {
-            if (_playbackMode == 'smart_shuffle') {
+            if (_upNextQueue.isNotEmpty) {
+              await nextSong(forceLocal: true);
+            } else if (_playbackMode == 'smart_shuffle') {
               await nextSong(forceLocal: true);
             } else if (_isSingleTrackSource && songs.isNotEmpty) {
               await nextSong(forceLocal: true);
@@ -1527,6 +1608,18 @@ class AudioProvider with ChangeNotifier {
     _audioPlayer.positionStream.listen((position) {
       if (!isControllingRemoteDevice) {
         _currentPosition = position;
+        // Transición suave (Crossfade) antes de terminar la canción
+        if (_crossfadeSeconds > 0 &&
+            _isPlaying &&
+            !_isCrossfading &&
+            !_isAutoAdvancing &&
+            _loopMode != LoopMode.one &&
+            _totalDuration > Duration(seconds: _crossfadeSeconds + 4)) {
+          final remainingMs = (_totalDuration - position).inMilliseconds;
+          if (remainingMs > 200 && remainingMs <= _crossfadeSeconds * 1000) {
+            unawaited(_triggerCrossfadeTransition());
+          }
+        }
         notifyListeners();
       }
     });
@@ -1909,7 +2002,7 @@ class AudioProvider with ChangeNotifier {
         }));
       }
 
-      _allSongs = combinedPcSongs;
+      _allSongs = combinedPcSongs.map(_applyMetadataOverrideToSong).toList();
       _visibleSongs = _allSongs.where((song) => !_isSongHiddenOrDeleted(song)).toList();
       _applySort();
       _needsPlaylistRebuild = true;
@@ -2051,7 +2144,7 @@ class AudioProvider with ChangeNotifier {
     }
 
     // 3. ASIGNAR LISTA FINAL (SOLO LOCALES, 100% REPRODUCIBLES, CERO DUPLICADOS)
-    _allSongs = verifiedSongs;
+    _allSongs = verifiedSongs.map(_applyMetadataOverrideToSong).toList();
     _visibleSongs = _allSongs.where((song) => !_isSongHiddenOrDeleted(song)).toList();
     _applySort();
 
@@ -2241,6 +2334,7 @@ class AudioProvider with ChangeNotifier {
           } catch (_) {}
         }
         unawaited(_audioPlayer.play());
+        unawaited(_recordSongPlay(song));
         updateActiveDeviceInCloud();
         return;
       }
@@ -2397,6 +2491,7 @@ class AudioProvider with ChangeNotifier {
         } catch (_) {}
       }
       unawaited(_audioPlayer.play());
+      unawaited(_recordSongPlay(targetSong));
       updateActiveDeviceInCloud();
     } catch (e) {
       print("Error playing song: $e");
@@ -2439,6 +2534,16 @@ class AudioProvider with ChangeNotifier {
   Future<void> nextSong({bool forceLocal = false}) async {
     final currentList = songs;
     if (isControllingRemoteDevice && !forceLocal) {
+      if (_upNextQueue.isNotEmpty) {
+        final queued = _upNextQueue.removeAt(0);
+        _currentPlayingSong = queued;
+        _currentPosition = Duration.zero;
+        _isRemotePlaying = true;
+        _updateRemoteProgressTicker();
+        notifyListeners();
+        await sendRemoteCommand(action: 'play', song: queued, positionMs: 0);
+        return;
+      }
       if (currentList.isNotEmpty) {
         int nextIdx;
         if (_isShuffle && currentList.length > 1) {
@@ -2449,6 +2554,22 @@ class AudioProvider with ChangeNotifier {
         await playSong(nextIdx, forceLocal: false);
       } else {
         await sendRemoteCommand(action: 'next');
+      }
+      return;
+    }
+
+    // Prioridad 1: Si el usuario agregó canciones a la Cola ("A continuación"), reproducir la siguiente de la cola
+    if (_upNextQueue.isNotEmpty) {
+      final queuedSong = _upNextQueue.removeAt(0);
+      final idxInList = currentList.indexWhere((s) =>
+          s.id == queuedSong.id ||
+          (normalizeForDedup(s.title).isNotEmpty &&
+              normalizeForDedup(s.title) == normalizeForDedup(queuedSong.title)));
+      notifyListeners();
+      if (idxInList != -1) {
+        await playSong(idxInList, forceLocal: true);
+      } else {
+        await _playCloudSong(queuedSong, -1);
       }
       return;
     }
@@ -2982,6 +3103,7 @@ class AudioProvider with ChangeNotifier {
         _syncLockScreenControls();
         notifyListeners();
         unawaited(_audioPlayer.play());
+        unawaited(_recordSongPlay(discSong));
         updateActiveDeviceInCloud();
       } else {
         _syncLockScreenControls();
@@ -3572,9 +3694,233 @@ class AudioProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  // ===========================================================================
+  // COLA DE REPRODUCCIÓN ("A CONTINUACIÓN")
+  // ===========================================================================
+
+  void addToQueue(SongModel song) {
+    _upNextQueue.add(song);
+    notifyListeners();
+  }
+
+  void playNextInQueue(SongModel song) {
+    _upNextQueue.insert(0, song);
+    notifyListeners();
+  }
+
+  void removeFromQueue(int index) {
+    if (index >= 0 && index < _upNextQueue.length) {
+      _upNextQueue.removeAt(index);
+      notifyListeners();
+    }
+  }
+
+  void reorderQueue(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= _upNextQueue.length) return;
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (newIndex < 0 || newIndex >= _upNextQueue.length) return;
+    final item = _upNextQueue.removeAt(oldIndex);
+    _upNextQueue.insert(newIndex, item);
+    notifyListeners();
+  }
+
+  void clearQueue() {
+    _upNextQueue.clear();
+    notifyListeners();
+  }
+
+  // ===========================================================================
+  // TRANSICIÓN SUAVE ENTRE CANCIONES (CROSSFADE)
+  // ===========================================================================
+
+  Future<void> setCrossfadeSeconds(int seconds) async {
+    _crossfadeSeconds = seconds.clamp(0, 8);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('pref_crossfade_seconds', _crossfadeSeconds);
+    notifyListeners();
+  }
+
+  Future<void> _triggerCrossfadeTransition() async {
+    if (_isCrossfading) return;
+    _isCrossfading = true;
+    try {
+      final fadeSteps = 8;
+      final stepMs = max(80, (_crossfadeSeconds * 500) ~/ fadeSteps);
+      for (int i = fadeSteps - 1; i >= 1; i--) {
+        if (!_isPlaying) break;
+        await _audioPlayer.setVolume(i / fadeSteps);
+        await Future.delayed(Duration(milliseconds: stepMs));
+      }
+      await _audioPlayer.setVolume(0.12);
+      await nextSong(forceLocal: true);
+      for (int i = 2; i <= fadeSteps; i++) {
+        await _audioPlayer.setVolume(i / fadeSteps);
+        await Future.delayed(Duration(milliseconds: stepMs));
+      }
+      await _audioPlayer.setVolume(1.0);
+    } catch (_) {
+      try {
+        await _audioPlayer.setVolume(1.0);
+      } catch (_) {}
+    } finally {
+      _isCrossfading = false;
+    }
+  }
+
+  // ===========================================================================
+  // ESTADÍSTICAS Y "LO MÁS ESCUCHADO"
+  // ===========================================================================
+
+  Future<void> _loadPlayStats() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final rawSongs = prefs.getString('play_counts_map');
+      if (rawSongs != null && rawSongs.isNotEmpty) {
+        final decoded = jsonDecode(rawSongs) as Map<String, dynamic>;
+        _playCounts = decoded.map((k, v) => MapEntry(k, (v as num).toInt()));
+      }
+      final rawArtists = prefs.getString('artist_play_counts_map');
+      if (rawArtists != null && rawArtists.isNotEmpty) {
+        final decoded = jsonDecode(rawArtists) as Map<String, dynamic>;
+        _artistPlayCounts = decoded.map((k, v) => MapEntry(k, (v as num).toInt()));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _recordSongPlay(SongModel song) async {
+    final key = normalizeForDedup(song.title);
+    if (key.isEmpty) return;
+
+    final now = DateTime.now();
+    if (_lastRecordedPlayKey == key &&
+        _lastRecordedPlayTime != null &&
+        now.difference(_lastRecordedPlayTime!).inSeconds < 12) {
+      return;
+    }
+    _lastRecordedPlayKey = key;
+    _lastRecordedPlayTime = now;
+
+    _playCounts[key] = (_playCounts[key] ?? 0) + 1;
+    final artist = (song.artist ?? '').trim();
+    if (!_isGenericArtistName(artist)) {
+      _artistPlayCounts[artist] = (_artistPlayCounts[artist] ?? 0) + 1;
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('play_counts_map', jsonEncode(_playCounts));
+      await prefs.setString('artist_play_counts_map', jsonEncode(_artistPlayCounts));
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  int getPlayCount(SongModel song) {
+    final key = normalizeForDedup(song.title);
+    return _playCounts[key] ?? 0;
+  }
+
+  int get totalPlayCount => _playCounts.values.fold(0, (a, b) => a + b);
+
+  List<SongModel> get topPlayedSongs {
+    final list = _visibleSongs.where((s) => getPlayCount(s) > 0).toList();
+    list.sort((a, b) => getPlayCount(b).compareTo(getPlayCount(a)));
+    return list.take(25).toList();
+  }
+
+  List<MapEntry<String, int>> get topArtists {
+    final entries = _artistPlayCounts.entries.toList();
+    entries.sort((a, b) => b.value.compareTo(a.value));
+    return entries.take(10).toList();
+  }
+
+  Future<void> clearPlayStats() async {
+    _playCounts.clear();
+    _artistPlayCounts.clear();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('play_counts_map');
+    await prefs.remove('artist_play_counts_map');
+    notifyListeners();
+  }
+
+  // ===========================================================================
+  // EDITOR RÁPIDO DE METADATOS (NOMBRE, ARTISTA Y CARÁTULA)
+  // ===========================================================================
+
+  Future<void> _loadMetadataOverrides() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('song_metadata_overrides');
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw) as Map<String, dynamic>;
+        _songMetadataOverrides = decoded.map(
+          (k, v) => MapEntry(k, Map<String, String>.from(v as Map)),
+        );
+      }
+    } catch (_) {}
+  }
+
+  SongModel _applyMetadataOverrideToSong(SongModel song) {
+    final idKey = 'id:${song.id}';
+    final normKey = 'norm:${normalizeForDedup(song.title)}';
+    final override = _songMetadataOverrides[idKey] ?? _songMetadataOverrides[normKey];
+    if (override == null) return song;
+
+    final map = Map<String, dynamic>.from(song.getMap);
+    if ((override['title'] ?? '').isNotEmpty) {
+      map['title'] = override['title'];
+    }
+    if ((override['artist'] ?? '').isNotEmpty) {
+      map['artist'] = override['artist'];
+    }
+    if ((override['custom_art_url'] ?? '').isNotEmpty) {
+      map['custom_art_url'] = override['custom_art_url'];
+    }
+    return SongModel(map);
+  }
+
+  Future<void> updateSongMetadata(
+    SongModel song, {
+    required String newTitle,
+    required String newArtist,
+    String? customArtUrl,
+  }) async {
+    final cleanTitle = newTitle.trim().isEmpty ? song.title : newTitle.trim();
+    final cleanArtist = newArtist.trim().isEmpty ? (song.artist ?? 'Artista desconocido') : newArtist.trim();
+    final cleanArt = customArtUrl?.trim() ?? (song.getMap['custom_art_url']?.toString() ?? '');
+
+    final entry = <String, String>{
+      'title': cleanTitle,
+      'artist': cleanArtist,
+      if (cleanArt.isNotEmpty) 'custom_art_url': cleanArt,
+    };
+
+    _songMetadataOverrides['id:${song.id}'] = entry;
+    final oldNorm = normalizeForDedup(song.title);
+    if (oldNorm.isNotEmpty) {
+      _songMetadataOverrides['norm:$oldNorm'] = entry;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('song_metadata_overrides', jsonEncode(_songMetadataOverrides));
+
+    if (_currentPlayingSong?.id == song.id) {
+      final updatedMap = Map<String, dynamic>.from(song.getMap);
+      updatedMap['title'] = cleanTitle;
+      updatedMap['artist'] = cleanArtist;
+      if (cleanArt.isNotEmpty) updatedMap['custom_art_url'] = cleanArt;
+      _currentPlayingSong = SongModel(updatedMap);
+    }
+
+    await fetchSongs();
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     _sleepTimer?.cancel();
+    _remoteProgressTicker?.cancel();
+    _heartbeatTimer?.cancel();
+    _fastSyncTimer?.cancel();
     _audioPlayer.dispose();
     super.dispose();
   }
