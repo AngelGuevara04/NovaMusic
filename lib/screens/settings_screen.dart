@@ -374,6 +374,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         },
                       ),
                       const Divider(color: Colors.white12, height: 1),
+                      SwitchListTile(
+                        activeColor: primaryColor,
+                        secondary: const Icon(Icons.power_settings_new_rounded, color: Colors.orangeAccent),
+                        title: const Text(
+                          'Detener música al cerrar la app',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: const Text(
+                          'Si está activo, al cerrar la ventana de la app se para la música (al salir sin cerrarla sigue sonando).',
+                          style: TextStyle(color: Color(0xFFDDDDDD), fontSize: 12.5, height: 1.3),
+                        ),
+                        value: audioProvider.stopMusicOnAppClose,
+                        onChanged: (val) => audioProvider.setStopMusicOnAppClose(val),
+                      ),
+                      const Divider(color: Colors.white12, height: 1),
                       ListTile(
                         leading: const Icon(Icons.waves_rounded, color: Colors.tealAccent),
                         title: const Text('Transición suave (Crossfade)', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),

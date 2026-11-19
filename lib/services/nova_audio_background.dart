@@ -26,6 +26,7 @@ class JustAudioBackground {
 
   static bool isCurrentSongLiked = false;
   static bool isCurrentSongDiscovery = false;
+  static bool stopOnTaskRemoved = true;
 
   static void updateLockScreenControls({
     required bool isLiked,
@@ -760,6 +761,14 @@ class _PlayerAudioHandler extends BaseAudioHandler
     (await _player).setShuffleMode(SetShuffleModeRequest(
         shuffleMode: ShuffleModeMessage.values[
             min(ShuffleModeMessage.values.length - 1, shuffleMode.index)]));
+  }
+
+  @override
+  Future<void> onTaskRemoved() async {
+    if (JustAudioBackground.stopOnTaskRemoved) {
+      await pause();
+      await stop();
+    }
   }
 
   @override

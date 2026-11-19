@@ -78,6 +78,9 @@ class AudioProvider with ChangeNotifier {
   final Set<String> _sessionPlayedDiscoveryIds = {};
   bool _isAutoAdvancing = false;
   bool _autoDeleteFromDevice = false;
+  bool _pausedByAudioInterruption = false;
+  bool _stopMusicOnAppClose = true;
+  bool get stopMusicOnAppClose => _stopMusicOnAppClose;
 
   // ---- Cola de reproducción ("A continuación") ----
   final List<SongModel> _upNextQueue = [];
@@ -1443,6 +1446,8 @@ class AudioProvider with ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     _currentSort = prefs.getString('pref_sort') ?? 'title';
     _autoDeleteFromDevice = prefs.getBool('auto_delete_from_device') ?? false;
+    _stopMusicOnAppClose = prefs.getBool('stop_music_on_app_close') ?? true;
+    JustAudioBackground.stopOnTaskRemoved = _stopMusicOnAppClose;
     _crossfadeSeconds = prefs.getInt('pref_crossfade_seconds') ?? 0;
     await _loadPlayStats();
     await _loadMetadataOverrides();
@@ -1545,7 +1550,14 @@ class AudioProvider with ChangeNotifier {
               _audioPlayer.setVolume(0.5);
               break;
             case AudioInterruptionType.pause:
-              _audioPlayer.pause();
+              // Solo recordar la interrupción si la música realmente estaba sonando antes;
+              // si el usuario ya la había pausado manualmente, NO reanudarla después.
+              if (_audioPlayer.playing || _isPlaying) {
+                _pausedByAudioInterruption = true;
+                _audioPlayer.pause();
+              } else {
+                _pausedByAudioInterruption = false;
+              }
               break;
             case AudioInterruptionType.unknown:
               // Do not pause on unknown events (e.g. minimizing on MagicOS/Android 14)
@@ -1557,7 +1569,10 @@ class AudioProvider with ChangeNotifier {
               _audioPlayer.setVolume(1.0);
               break;
             case AudioInterruptionType.pause:
-              _audioPlayer.play();
+              if (_pausedByAudioInterruption) {
+                _pausedByAudioInterruption = false;
+                _audioPlayer.play();
+              }
               break;
             case AudioInterruptionType.unknown:
               break;
@@ -2500,6 +2515,7 @@ class AudioProvider with ChangeNotifier {
   }
 
   Future<void> playPause() async {
+    _pausedByAudioInterruption = false;
     // Si estamos controlando otro dispositivo (ej. Celular controlando la PC), pausar o reanudar el otro dispositivo
     if (isControllingRemoteDevice) {
       final nextState = !_isRemotePlaying;
@@ -3732,6 +3748,14 @@ class AudioProvider with ChangeNotifier {
   // ===========================================================================
   // TRANSICIÓN SUAVE ENTRE CANCIONES (CROSSFADE)
   // ===========================================================================
+
+  Future<void> setStopMusicOnAppClose(bool value) async {
+    _stopMusicOnAppClose = value;
+    JustAudioBackground.stopOnTaskRemoved = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('stop_music_on_app_close', value);
+    notifyListeners();
+  }
 
   Future<void> setCrossfadeSeconds(int seconds) async {
     _crossfadeSeconds = seconds.clamp(0, 8);
