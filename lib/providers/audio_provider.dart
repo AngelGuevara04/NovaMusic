@@ -80,7 +80,9 @@ class AudioProvider with ChangeNotifier {
   bool _autoDeleteFromDevice = false;
   bool _pausedByAudioInterruption = false;
   bool _stopMusicOnAppClose = true;
+  bool _isInitialLoading = true;
   bool get stopMusicOnAppClose => _stopMusicOnAppClose;
+  bool get isInitialLoading => _isInitialLoading;
 
   // ---- Cola de reproducción ("A continuación") ----
   final List<SongModel> _upNextQueue = [];
@@ -1449,8 +1451,53 @@ class AudioProvider with ChangeNotifier {
     _stopMusicOnAppClose = prefs.getBool('stop_music_on_app_close') ?? true;
     JustAudioBackground.stopOnTaskRemoved = _stopMusicOnAppClose;
     _crossfadeSeconds = prefs.getInt('pref_crossfade_seconds') ?? 0;
+    _currentUsername = prefs.getString('current_username');
+
+    await _loadHiddenSongs();
+    await _loadFavoriteSongs();
     await _loadPlayStats();
     await _loadMetadataOverrides();
+
+    final cachedLib = prefs.getString('cached_library_songs');
+    if (cachedLib != null && cachedLib.isNotEmpty) {
+      try {
+        final List<dynamic> parsed = jsonDecode(cachedLib);
+        _cloudLibrarySongs = parsed.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } catch (_) {}
+    }
+
+    // Mostrar canciones en caché al instante al abrir la app (evita el parpadeo de "Aún no tienes canciones aquí")
+    final cachedSongsRaw = prefs.getString('cached_local_songs_list');
+    if (cachedSongsRaw != null && cachedSongsRaw.isNotEmpty) {
+      try {
+        final List<dynamic> parsed = jsonDecode(cachedSongsRaw);
+        final cachedModels = parsed
+            .whereType<Map>()
+            .map((e) => _applyMetadataOverrideToSong(SongModel(Map<String, dynamic>.from(e))))
+            .toList();
+        if (cachedModels.isNotEmpty) {
+          _allSongs = cachedModels;
+          _visibleSongs = _allSongs.where((s) => !_isSongHiddenOrDeleted(s)).toList();
+          _applySort();
+          notifyListeners();
+        }
+      } catch (_) {}
+    } else if (kIsWeb && _cloudLibrarySongs.isNotEmpty) {
+      _allSongs = _cloudLibrarySongs.map((c) {
+        return _applyMetadataOverrideToSong(SongModel({
+          '_id': c['id'] is int ? c['id'] : int.tryParse(c['id'].toString()) ?? DateTime.now().millisecondsSinceEpoch,
+          'title': (c['title'] ?? 'Sin título').toString(),
+          'artist': (c['artist'] ?? 'Artista desconocido').toString(),
+          'duration': c['duration'] is int ? c['duration'] : int.tryParse(c['duration'].toString()) ?? 0,
+          '_data': c['url'] ?? '',
+          'is_cloud': true,
+          'youtube_id': c['youtube_id'] ?? '',
+        }));
+      }).toList();
+      _visibleSongs = _allSongs.where((s) => !_isSongHiddenOrDeleted(s)).toList();
+      _applySort();
+      notifyListeners();
+    }
     final savedMode = prefs.getString('pref_playback_mode');
     if (savedMode != null && (savedMode == 'normal' || savedMode == 'shuffle_local' || savedMode == 'smart_shuffle')) {
       _playbackMode = savedMode;
@@ -1510,29 +1557,13 @@ class AudioProvider with ChangeNotifier {
       }
     };
 
-    _currentUsername = prefs.getString('current_username');
-    final cachedLib = prefs.getString('cached_library_songs');
-    if (cachedLib != null && cachedLib.isNotEmpty) {
-      try {
-        final List<dynamic> parsed = jsonDecode(cachedLib);
-        _cloudLibrarySongs = parsed.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      } catch (_) {}
-    }
-    await _loadHiddenSongs();
-    await _loadFavoriteSongs();
-    final cachedPlaylists = prefs.getString('cached_playlists');
-    if (cachedPlaylists != null && cachedPlaylists.isNotEmpty) {
-      try {
-        final List<dynamic> parsed = jsonDecode(cachedPlaylists);
-        _playlists = parsed.map((e) => PlaylistModel.fromJson(Map<String, dynamic>.from(e as Map))).toList();
-      } catch (_) {}
-    }
-    _listenToPlayerEvents();
-    await checkAndRequestPermissions();
-    
     // Auto-sync from Supabase if logged in
     if (_currentUsername != null && _currentUsername!.isNotEmpty) {
-      loadPreferencesFromSupabase(_currentUsername!);
+      unawaited(loadPreferencesFromSupabase(_currentUsername!));
+    }
+    if (_isInitialLoading) {
+      _isInitialLoading = false;
+      notifyListeners();
     }
   }
 
@@ -2021,6 +2052,7 @@ class AudioProvider with ChangeNotifier {
       _visibleSongs = _allSongs.where((song) => !_isSongHiddenOrDeleted(song)).toList();
       _applySort();
       _needsPlaylistRebuild = true;
+      _isInitialLoading = false;
       notifyListeners();
       return;
     }
@@ -2162,6 +2194,14 @@ class AudioProvider with ChangeNotifier {
     _allSongs = verifiedSongs.map(_applyMetadataOverrideToSong).toList();
     _visibleSongs = _allSongs.where((song) => !_isSongHiddenOrDeleted(song)).toList();
     _applySort();
+    _isInitialLoading = false;
+
+    // Guardar caché ligero de la lista para que al abrir la app aparezca al instante sin pantalla vacía
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cacheMaps = _visibleSongs.map((s) => s.getMap).toList();
+      await prefs.setString('cached_local_songs_list', jsonEncode(cacheMaps));
+    } catch (_) {}
 
     // 4. Sincronizar catálogo de respaldo en la nube: SOLO las canciones que están en _visibleSongs
     // y limpiar de _cloudLibrarySongs cualquier canción que haya sido quitada de la lista o eliminada

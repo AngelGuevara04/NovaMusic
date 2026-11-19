@@ -609,6 +609,22 @@ class _HomeScreenState extends State<HomeScreen> {
             );
           }
 
+          if (audioProvider.songs.isEmpty && audioProvider.isInitialLoading) {
+            return const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: Colors.deepPurpleAccent),
+                  SizedBox(height: 16),
+                  Text(
+                    'Cargando tu música...',
+                    style: TextStyle(color: Colors.white70, fontSize: 15, fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
+            );
+          }
+
           if (audioProvider.songs.isEmpty) {
             final missingCloud = audioProvider.missingCloudSongs;
             return Center(
