@@ -30,14 +30,17 @@ def get_base_dir():
 base_dir = get_base_dir()
 
 def resolve_web_dir():
-    candidates = [
+    candidates = []
+    if getattr(sys, 'frozen', False):
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(os.path.join(sys._MEIPASS, "web"))
+        candidates.append(os.path.join(base_dir, "_internal", "web"))
+    candidates.extend([
         os.path.join(base_dir, "NovaMusic-PC"),
         os.path.join(base_dir, "Instaladores", "PC", "NovaMusic-PC"),
         os.path.join(base_dir, "build", "web"),
         os.path.join(base_dir, "_internal", "web"),
-    ]
-    if hasattr(sys, "_MEIPASS"):
-        candidates.append(os.path.join(sys._MEIPASS, "web"))
+    ])
     for c in candidates:
         if os.path.exists(os.path.join(c, "index.html")):
             return c
