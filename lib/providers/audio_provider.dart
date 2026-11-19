@@ -644,48 +644,7 @@ class AudioProvider with ChangeNotifier {
       changed = true;
     }
 
-    // 2. Sincronizar estado del dispositivo activo (para mostrar progreso y estado en el control remoto)
-    if (newRec['active_device'] != null && newRec['active_device'] is Map) {
-      _activeCloudDevice = Map<String, dynamic>.from(newRec['active_device'] as Map);
-      final activeDevId = _activeCloudDevice!['device_id']?.toString();
-      final activeIsPlaying = _activeCloudDevice!['is_playing'] == true;
-
-      if (activeDevId != null && activeDevId.isNotEmpty && activeDevId != _deviceId) {
-        // Si este dispositivo no está reproduciendo localmente y otro dispositivo está activo (o ya lo controlamos)
-        if (!_isPlaying && (isControllingRemoteDevice || activeIsPlaying)) {
-          _remoteOutputDeviceId = activeDevId;
-          _remoteOutputDeviceName = _activeCloudDevice!['device_name']?.toString() ?? _remoteOutputDeviceName;
-          _isRemotePlaying = activeIsPlaying;
-
-          final activeSongMap = _activeCloudDevice!['song'] is Map
-              ? Map<String, dynamic>.from(_activeCloudDevice!['song'] as Map)
-              : null;
-          final activeTitle = (_activeCloudDevice!['song_title'] ?? '').toString();
-          if (activeTitle.isNotEmpty || activeSongMap != null) {
-            final resolved = _resolveSongFromRemoteTitle(activeTitle, fallbackMap: activeSongMap);
-            if (resolved != null) {
-              _currentPlayingSong = resolved;
-              final durMs = (activeSongMap?['duration'] is num)
-                  ? (activeSongMap!['duration'] as num).toInt()
-                  : (resolved.duration ?? 0);
-              if (durMs > 0) {
-                _totalDuration = Duration(milliseconds: durMs);
-              }
-            }
-          }
-          if (_activeCloudDevice!['position_ms'] is num) {
-            final remotePosMs = (_activeCloudDevice!['position_ms'] as num).toInt();
-            if ((_currentPosition.inMilliseconds - remotePosMs).abs() > 3500 || !activeIsPlaying) {
-              _currentPosition = Duration(milliseconds: remotePosMs);
-            }
-          }
-          _updateRemoteProgressTicker();
-        }
-      }
-      changed = true;
-    }
-
-    // 3. Control de salida de audio remoto (tipo Spotify Connect: Play, Pause, Resume, Seek, Next, Prev)
+    // 2. Control de salida de audio remoto (procesar primero por si llegó una orden para este dispositivo)
     if (newRec['playback_state'] != null && newRec['playback_state'] is Map) {
       final pb = Map<String, dynamic>.from(newRec['playback_state'] as Map);
       _lastRemotePlaybackState = pb;
@@ -693,6 +652,47 @@ class AudioProvider with ChangeNotifier {
 
       if (cmdId.isNotEmpty && cmdId != _lastHandledCommandId) {
         _executeRemotePlaybackCommand(pb);
+      }
+      changed = true;
+    }
+
+    // 3. Sincronizar progreso del dispositivo remoto SOLO si este dispositivo está en modo Control Remoto activo
+    if (newRec['active_device'] != null && newRec['active_device'] is Map) {
+      _activeCloudDevice = Map<String, dynamic>.from(newRec['active_device'] as Map);
+      final activeDevId = _activeCloudDevice!['device_id']?.toString();
+      final activeIsPlaying = _activeCloudDevice!['is_playing'] == true;
+
+      if (isControllingRemoteDevice &&
+          !_isPlaying &&
+          !_isConnectingCloudStream &&
+          activeDevId != null &&
+          activeDevId == _remoteOutputDeviceId) {
+        _remoteOutputDeviceName = _activeCloudDevice!['device_name']?.toString() ?? _remoteOutputDeviceName;
+        _isRemotePlaying = activeIsPlaying;
+
+        final activeSongMap = _activeCloudDevice!['song'] is Map
+            ? Map<String, dynamic>.from(_activeCloudDevice!['song'] as Map)
+            : null;
+        final activeTitle = (_activeCloudDevice!['song_title'] ?? '').toString();
+        if (activeTitle.isNotEmpty || activeSongMap != null) {
+          final resolved = _resolveSongFromRemoteTitle(activeTitle, fallbackMap: activeSongMap);
+          if (resolved != null) {
+            _currentPlayingSong = resolved;
+            final durMs = (activeSongMap?['duration'] is num)
+                ? (activeSongMap!['duration'] as num).toInt()
+                : (resolved.duration ?? 0);
+            if (durMs > 0) {
+              _totalDuration = Duration(milliseconds: durMs);
+            }
+          }
+        }
+        if (_activeCloudDevice!['position_ms'] is num) {
+          final remotePosMs = (_activeCloudDevice!['position_ms'] as num).toInt();
+          if ((_currentPosition.inMilliseconds - remotePosMs).abs() > 3500 || !activeIsPlaying) {
+            _currentPosition = Duration(milliseconds: remotePosMs);
+          }
+        }
+        _updateRemoteProgressTicker();
       }
       changed = true;
     }

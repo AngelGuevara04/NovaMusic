@@ -136,14 +136,14 @@ def find_local_audio_file(query_or_title: str, title: str = "", artist: str = ""
 
     # 2. Coincidencia por subcadena para nombres largos
     for c in candidates:
-        if len(c) < 5:
+        if len(c) < 8:
             continue
         for f in files:
             fnorm = f["norm"]
             snorm = f.get("short_norm") or ""
-            if len(fnorm) >= 5 and (fnorm in c or c in fnorm):
+            if len(fnorm) >= 8 and (fnorm in c or c in fnorm):
                 return f["path"]
-            if len(snorm) >= 5 and (snorm in c or c in snorm):
+            if len(snorm) >= 8 and (snorm in c or c in snorm):
                 return f["path"]
     return None
 
