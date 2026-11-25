@@ -24,4 +24,21 @@ if (Test-Path $iconPath) {
 $Shortcut.Description = "NovaMusic - Aplicación de Música Personal"
 $Shortcut.Save()
 
-Write-Host "✅ Acceso directo 'NovaMusic' creado en el Escritorio correctamente." -ForegroundColor Green
+$braveShortcutPath = Join-Path $desktopDir "NovaMusic (Brave).lnk"
+$BraveShortcut = $WshShell.CreateShortcut($braveShortcutPath)
+if (Test-Path $exePath) {
+    $BraveShortcut.TargetPath = $exePath
+    $BraveShortcut.Arguments = "--browser"
+    $BraveShortcut.WorkingDirectory = Split-Path -Parent $exePath
+} else {
+    $BraveShortcut.TargetPath = "wscript.exe"
+    $BraveShortcut.Arguments = "`"$vbsPath`""
+    $BraveShortcut.WorkingDirectory = Split-Path -Parent $vbsPath
+}
+if (Test-Path $iconPath) {
+    $BraveShortcut.IconLocation = "$iconPath,0"
+}
+$BraveShortcut.Description = "NovaMusic en Brave (Modo ligero sin WebView2)"
+$BraveShortcut.Save()
+
+Write-Host "✅ Accesos directos 'NovaMusic' y 'NovaMusic (Brave)' creados en el Escritorio correctamente." -ForegroundColor Green

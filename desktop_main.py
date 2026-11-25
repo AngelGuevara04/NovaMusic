@@ -8,6 +8,8 @@ import urllib.request
 import threading
 import http.server
 import socket
+import subprocess
+import webbrowser
 
 # Permitir reproducción remota inmediata sin requerir clic previo (Spotify Connect)
 # y evitar que Windows/Edge suspenda los temporizadores cuando la ventana está en segundo plano
@@ -17,8 +19,6 @@ os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
     "--disable-backgrounding-occluded-windows "
     "--disable-renderer-backgrounding"
 )
-
-import webview
 
 PORT = 8085
 
@@ -662,7 +662,47 @@ def start_local_server():
     except Exception:
         pass
 
+def is_port_in_use(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+def open_in_brave_or_browser(url):
+    candidates = [
+        os.path.join(os.environ.get("PROGRAMFILES", ""), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            try:
+                subprocess.Popen([path, url], close_fds=True)
+                return
+            except Exception:
+                pass
+    webbrowser.open(url)
+
 if __name__ == "__main__":
+    browser_mode = "--browser" in sys.argv or "--headless" in sys.argv
+    if browser_mode:
+        url = f"http://127.0.0.1:{PORT}"
+        if is_port_in_use(PORT):
+            open_in_brave_or_browser(url)
+            sys.exit(0)
+        http.server.ThreadingHTTPServer.allow_reuse_address = True
+        try:
+            with http.server.ThreadingHTTPServer(("127.0.0.1", PORT), NovaHandler) as httpd:
+                threading.Thread(
+                    target=lambda: (time.sleep(0.35), open_in_brave_or_browser(url)),
+                    daemon=True,
+                ).start()
+                httpd.serve_forever()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    import webview
+
     server_thread = threading.Thread(target=start_local_server, daemon=True)
     server_thread.start()
 
