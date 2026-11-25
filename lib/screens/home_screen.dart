@@ -36,6 +36,15 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      final audioProvider = Provider.of<AudioProvider>(context, listen: false);
+      final downloaderProvider = Provider.of<DownloaderProvider>(context, listen: false);
+      audioProvider.onMissingCloudSongsDetected = (missing) async {
+        await downloaderProvider.downloadAllCloudSongs(
+          missing,
+          onProgressUpdate: () => audioProvider.fetchSongs(),
+        );
+      };
+      audioProvider.checkAndAutoDownloadMissingSongs();
       UpdaterService.checkAndShowDailyUpdateDialog(context);
     });
   }

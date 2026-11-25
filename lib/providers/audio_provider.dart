@@ -64,6 +64,9 @@ class AudioProvider with ChangeNotifier {
   int? _activeLocalSongId;
   DateTime? _activeLocalSongStartedAt;
   bool _isSwitchingTrack = false;
+  Future<void> Function(List<Map<String, dynamic>> missing)? onMissingCloudSongsDetected;
+  final Set<String> _autoDownloadAttemptedKeys = <String>{};
+  bool _isAutoDownloadingMissing = false;
   bool _isDiscoveryMode = false;
   bool _isLoadingDiscovery = false;
   bool _isPreloadingDiscovery = false;
@@ -623,12 +626,18 @@ class AudioProvider with ChangeNotifier {
               return true;
             })
             .toList();
-        if (incomingLib.length != _cloudLibrarySongs.length) {
+        final prevTitles = _cloudLibrarySongs
+            .map((e) => normalizeForDedup((e['title'] ?? '').toString()))
+            .toSet();
+        final hasNewTitle = incomingLib.any(
+          (e) => !prevTitles.contains(normalizeForDedup((e['title'] ?? '').toString())),
+        );
+        if (incomingLib.length != _cloudLibrarySongs.length || hasNewTitle) {
           _cloudLibrarySongs = incomingLib;
           SharedPreferences.getInstance().then((prefs) {
             prefs.setString('cached_library_songs', jsonEncode(_cloudLibrarySongs));
           });
-          unawaited(fetchSongs());
+          unawaited(fetchSongs().then((_) => checkAndAutoDownloadMissingSongs()));
         }
       } catch (_) {}
     }
@@ -1868,9 +1877,39 @@ class AudioProvider with ChangeNotifier {
         } catch (_) {}
 
         await fetchSongs();
+        unawaited(checkAndAutoDownloadMissingSongs());
       }
     } catch (e) {
       print('Error loading from Supabase: $e');
+    }
+  }
+
+  Future<void> checkAndAutoDownloadMissingSongs() async {
+    if (_currentUsername == null || _currentUsername!.isEmpty) return;
+    if (onMissingCloudSongsDetected == null || _isAutoDownloadingMissing) return;
+    if (_cloudLibrarySongs.isEmpty) return;
+
+    final missing = uniqueCloudLibrarySongs.where((c) {
+      if (isCloudItemDownloadedOnDevice(c)) return false;
+      final key = normalizeForDedup((c['title'] ?? '').toString());
+      if (key.isEmpty || _autoDownloadAttemptedKeys.contains(key)) return false;
+      return true;
+    }).toList();
+
+    if (missing.isEmpty) return;
+
+    for (final c in missing) {
+      final key = normalizeForDedup((c['title'] ?? '').toString());
+      if (key.isNotEmpty) _autoDownloadAttemptedKeys.add(key);
+    }
+
+    _isAutoDownloadingMissing = true;
+    try {
+      await onMissingCloudSongsDetected!(missing);
+    } catch (e) {
+      print('Auto-download missing cloud songs error: $e');
+    } finally {
+      _isAutoDownloadingMissing = false;
     }
   }
 
