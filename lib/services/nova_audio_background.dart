@@ -180,7 +180,6 @@ class _JustAudioPlayer extends AudioPlayerPlatform {
       StreamController<PlayerDataMessage>.broadcast(sync: true);
 
   _JustAudioPlayer({required this.initRequest}) : super(initRequest.id) {
-    eventController.onCancel = _playerAudioHandler.cancelStreamSubscriptions;
     _playerAudioHandler._initPlayer(initRequest);
     _audioHandler.inner = _playerAudioHandler;
     _audioHandler.customEvent
@@ -198,6 +197,7 @@ class _JustAudioPlayer extends AudioPlayerPlatform {
   PlaybackState get playbackState => _audioHandler.playbackState.nvalue!;
 
   Future<void> release() async {
+    await _playerAudioHandler.cancelStreamSubscriptions();
     await _audioHandler.stop();
   }
 

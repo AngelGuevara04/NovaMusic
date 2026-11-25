@@ -119,7 +119,7 @@ Set-Content -Path $reportFile -Value $promptText -Encoding UTF8
 # Abrir la ventana de Antigravity en el proyecto NovaMusic si no esta abierta
 if (Test-Path $antigravityExe) {
     Start-Process -FilePath $antigravityExe -ArgumentList "`"$projectDir`""
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 15
 }
 
 # Enviar mensaje directo a la conversacion del proyecto en Antigravity usando agentapi.bat

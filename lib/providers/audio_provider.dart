@@ -62,6 +62,8 @@ class AudioProvider with ChangeNotifier {
   String _playbackMode = 'normal'; // 'normal' | 'shuffle_local' | 'smart_shuffle'
   int _smartShuffleLocalCounter = 0;
   int? _activeLocalSongId;
+  DateTime? _activeLocalSongStartedAt;
+  bool _isSwitchingTrack = false;
   bool _isDiscoveryMode = false;
   bool _isLoadingDiscovery = false;
   bool _isPreloadingDiscovery = false;
@@ -186,6 +188,7 @@ class AudioProvider with ChangeNotifier {
   DateTime? _sleepTimerEndTime;
 
   AudioProvider() {
+    _listenToPlayerEvents();
     _init();
   }
 
@@ -1692,9 +1695,13 @@ class AudioProvider with ChangeNotifier {
             if (changed) {
               // En Modo Inteligente: 1 Canción Local -> 1 Recomendación (pre-cargada sin silencios)
               if (_playbackMode == 'smart_shuffle' &&
+                  !_isSwitchingTrack &&
                   !_isAutoAdvancing &&
+                  !isPlayingDiscoverySong &&
                   _activeLocalSongId != null &&
-                  matchedSong.id != _activeLocalSongId) {
+                  matchedSong.id != _activeLocalSongId &&
+                  (_activeLocalSongStartedAt == null ||
+                      DateTime.now().difference(_activeLocalSongStartedAt!).inSeconds >= 3)) {
                 _activeLocalSongId = null;
                 _isAutoAdvancing = true;
                 Future.microtask(() async {
@@ -1709,6 +1716,7 @@ class AudioProvider with ChangeNotifier {
               _currentIndex = matchedIdx;
               _currentPlayingSong = matchedSong;
               _activeLocalSongId = matchedSong.id;
+              _activeLocalSongStartedAt = DateTime.now();
               _syncLockScreenControls();
               if (_playbackMode == 'smart_shuffle') {
                 unawaited(_preloadNextDiscoveryInBackground());
@@ -2370,8 +2378,11 @@ class AudioProvider with ChangeNotifier {
 
       if (kIsWeb) {
         // En PC / Web usar el proxy local libre de CORS (/api/stream)
+        try {
+          await _audioPlayer.stop();
+        } catch (_) {}
         final queryStr = '${song.title} ${song.artist ?? ""}'.trim();
-        final streamUri = Uri.parse(
+        final streamUri = Uri.base.resolve(
           '/api/stream?id=${Uri.encodeComponent(ytId)}&title=${Uri.encodeComponent(song.title)}&artist=${Uri.encodeComponent(song.artist ?? "")}&q=${Uri.encodeComponent(queryStr)}',
         );
         final source = AudioSource.uri(streamUri, tag: mediaItem);
@@ -2380,6 +2391,10 @@ class AudioProvider with ChangeNotifier {
             .timeout(const Duration(seconds: 20));
         _currentIndex = index;
         _currentPlayingSong = song;
+        _currentPosition = initialPosition;
+        if ((song.duration ?? 0) > 0 && _totalDuration == Duration.zero) {
+          _totalDuration = Duration(milliseconds: song.duration!);
+        }
         _isConnectingCloudStream = false;
         _isPlaying = true;
         notifyListeners();
@@ -2388,7 +2403,9 @@ class AudioProvider with ChangeNotifier {
             await _audioPlayer.seek(initialPosition);
           } catch (_) {}
         }
-        unawaited(_audioPlayer.play());
+        try {
+          await _audioPlayer.play().timeout(const Duration(seconds: 5));
+        } catch (_) {}
         unawaited(_recordSongPlay(song));
         updateActiveDeviceInCloud();
         return;
@@ -2506,6 +2523,11 @@ class AudioProvider with ChangeNotifier {
     _currentPlayingSong = targetSong;
     _currentIndex = index;
     _activeLocalSongId = targetSong.id;
+    _activeLocalSongStartedAt = DateTime.now();
+    _currentPosition = initialPosition;
+    if ((targetSong.duration ?? 0) > 0) {
+      _totalDuration = Duration(milliseconds: targetSong.duration!);
+    }
     _syncLockScreenControls();
 
     // Si estamos en Modo Inteligente ✨, pre-descargar desde ahora la siguiente recomendación
@@ -2519,19 +2541,25 @@ class AudioProvider with ChangeNotifier {
       return;
     }
 
-    if (_playlist == null || _needsPlaylistRebuild || _isSingleTrackSource) {
-      await _setupAudioSource(initialIndex: index, initialPosition: initialPosition);
-    } else {
-      try {
-        await _audioPlayer.seek(initialPosition, index: index);
-      } catch (e) {
+    _isSwitchingTrack = true;
+    try {
+      if (_playlist == null || _needsPlaylistRebuild || _isSingleTrackSource) {
         await _setupAudioSource(initialIndex: index, initialPosition: initialPosition);
+      } else {
+        try {
+          await _audioPlayer.seek(initialPosition, index: index);
+        } catch (e) {
+          await _setupAudioSource(initialIndex: index, initialPosition: initialPosition);
+        }
       }
+    } finally {
+      _isSwitchingTrack = false;
     }
-    
+
     _currentIndex = index;
     _currentPlayingSong = targetSong;
     _activeLocalSongId = targetSong.id;
+    _activeLocalSongStartedAt = DateTime.now();
     _syncLockScreenControls();
     try {
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
@@ -3382,11 +3410,16 @@ class AudioProvider with ChangeNotifier {
       }
     }
 
-    await _audioPlayer.setShuffleModeEnabled(_isShuffle);
-    if (_isShuffle && _playlist != null) {
-      try {
-        await _audioPlayer.shuffle();
-      } catch (_) {}
+    _isSwitchingTrack = true;
+    try {
+      await _audioPlayer.setShuffleModeEnabled(_isShuffle);
+      if (_isShuffle && _playlist != null) {
+        try {
+          await _audioPlayer.shuffle();
+        } catch (_) {}
+      }
+    } finally {
+      _isSwitchingTrack = false;
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('pref_playback_mode', _playbackMode);
