@@ -20,9 +20,10 @@ import 'package:http/http.dart' as http;
 import 'package:ffmpeg_kit_flutter_audio/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import '../services/equalizer_service.dart';
+import '../services/web_media_helper.dart';
 import 'downloader_provider.dart';
 
-class AudioProvider with ChangeNotifier {
+class AudioProvider with ChangeNotifier, WidgetsBindingObserver {
   final OnAudioQuery _audioQuery = OnAudioQuery();
   final AudioPlayer _audioPlayer = AudioPlayer();
   
@@ -107,10 +108,41 @@ class AudioProvider with ChangeNotifier {
   // ---- Editor rápido de metadatos (título, artista, carátula) ----
   Map<String, Map<String, String>> _songMetadataOverrides = {};
 
+  bool _isAppInBackground = false;
+
+  void _setAppBackgroundState(bool hidden) {
+    if (_isAppInBackground == hidden) return;
+    _isAppInBackground = hidden;
+    if (_heartbeatTimer != null || _fastSyncTimer != null) {
+      _startHeartbeatTimer();
+    }
+    if (!hidden) {
+      notifyListeners();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final hidden = state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached;
+    _setAppBackgroundState(hidden);
+  }
+
   void _syncLockScreenControls() {
-    if (kIsWeb) return;
     final cs = currentSong;
     final isDisc = isPlayingDiscoverySong;
+    if (kIsWeb) {
+      WebMediaHelper.updateMediaSession(
+        title: cs?.title ?? 'NovaMusic',
+        artist: (cs?.artist != null && cs!.artist!.isNotEmpty)
+            ? cs.artist!
+            : 'NovaMusic',
+        album: isDisc ? _currentDiscoverySeedInfo : 'NovaMusic',
+        isPlaying: _isPlaying,
+      );
+      return;
+    }
     final isLiked = isDisc
         ? _isCurrentDiscoverySaved
         : (cs != null && _favoriteSongIds.contains(cs.id));
@@ -517,13 +549,15 @@ class AudioProvider with ChangeNotifier {
   }
 
   void _startHeartbeatTimer() {
+    final hbSeconds = _isAppInBackground ? 30 : 15;
+    final syncSeconds = _isAppInBackground ? 10 : 2;
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+    _heartbeatTimer = Timer.periodic(Duration(seconds: hbSeconds), (_) {
       registerDeviceInCloud();
     });
 
     _fastSyncTimer?.cancel();
-    _fastSyncTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+    _fastSyncTimer = Timer.periodic(Duration(seconds: syncSeconds), (_) {
       _pollCloudPlaybackAndDevices();
     });
   }
@@ -542,7 +576,9 @@ class AudioProvider with ChangeNotifier {
         } else {
           _currentPosition = nextPos;
         }
-        notifyListeners();
+        if (!_isAppInBackground) {
+          notifyListeners();
+        }
       });
     }
   }
@@ -1532,6 +1568,24 @@ class AudioProvider with ChangeNotifier {
     await _audioPlayer.setLoopMode(_loopMode);
 
     // Configurar sesión de audio profesional para manejar foco y segundo plano
+    WidgetsBinding.instance.addObserver(this);
+    if (kIsWeb) {
+      _isAppInBackground = WebMediaHelper.isHidden;
+      WebMediaHelper.initVisibilityListener((isHidden) {
+        _setAppBackgroundState(isHidden);
+      });
+      WebMediaHelper.setActionHandlers(
+        onPlay: () async {
+          if (!_isPlaying) await playPause();
+        },
+        onPause: () async {
+          if (_isPlaying) await playPause();
+        },
+        onNext: () async => nextSong(),
+        onPrevious: () async => previousSong(),
+        onSeekTo: (pos) async => seekTo(pos),
+      );
+    }
     await _setupAudioSession();
     await _initDeviceId();
 
@@ -1641,8 +1695,13 @@ class AudioProvider with ChangeNotifier {
           EqualizerService.init(sessionId);
         }
       }
-      if (prevPlaying != _isPlaying && !isControllingRemoteDevice) {
-        updateActiveDeviceInCloud();
+      if (prevPlaying != _isPlaying) {
+        if (kIsWeb) {
+          _syncLockScreenControls();
+        }
+        if (!isControllingRemoteDevice) {
+          updateActiveDeviceInCloud();
+        }
       }
       if (state.processingState == ProcessingState.completed && !_isAutoAdvancing && !isControllingRemoteDevice) {
         _isAutoAdvancing = true;
@@ -1678,7 +1737,9 @@ class AudioProvider with ChangeNotifier {
             unawaited(_triggerCrossfadeTransition());
           }
         }
-        notifyListeners();
+        if (!_isAppInBackground) {
+          notifyListeners();
+        }
       }
     });
 
@@ -2436,6 +2497,7 @@ class AudioProvider with ChangeNotifier {
         }
         _isConnectingCloudStream = false;
         _isPlaying = true;
+        _syncLockScreenControls();
         notifyListeners();
         if (initialPosition > Duration.zero) {
           try {
@@ -4053,6 +4115,7 @@ class AudioProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _sleepTimer?.cancel();
     _remoteProgressTicker?.cancel();
     _heartbeatTimer?.cancel();

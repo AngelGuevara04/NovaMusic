@@ -141,6 +141,13 @@
       visibility: hidden !important;
       pointer-events: none;
     }
+
+    body.tab-hidden *,
+    body.tab-hidden *::before,
+    body.tab-hidden *::after {
+      animation-play-state: paused !important;
+      transition: none !important;
+    }
   </style>
 </head>
 <body>
@@ -190,6 +197,13 @@
         }
       });
     }
+
+    // Modo pluma: pausar animaciones visuales cuando la pestaña pasa a segundo plano
+    document.addEventListener('visibilitychange', function() {
+      if (document.body) {
+        document.body.classList.toggle('tab-hidden', document.hidden);
+      }
+    });
 
     // Fallback safety timeout (max 6 seconds)
     setTimeout(dismissSplashScreen, 6000);
